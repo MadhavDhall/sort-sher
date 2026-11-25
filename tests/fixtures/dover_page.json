@@ -1,0 +1,22 @@
+{
+ "id": "1e087dd4-d16e-486d-9b69-f7fddfa2444d",
+ "slug": "mixrank",
+ "name": "MixRank",
+ "logo": "https://dover-django.t3.tigrisbucket.io/client-logos/1e087dd4-d16e-486d-9b69-f7fddfa2444d-1723493894-logo.jpeg",
+ "careers_page_info": "<p>MixRank processes petabytes of data every month from web crawling. We have hundreds of customers using our data products including Google, Amazon, Facebook, Intel, and Adobe, across industries incl",
+ "careers_page_image": null,
+ "careers_page_logo_redirect_url": "https://mixrank.com/",
+ "careers_page_display_stats": [],
+ "careers_page_social_links": [],
+ "careers_page_font": null,
+ "careers_page_font_family": "'Inter', sans-serif",
+ "careers_page_google_font_url": "https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap",
+ "careers_page_accent_color": null,
+ "careers_page_background_color": null,
+ "careers_page_logo_height": null,
+ "bias_audit_link": null,
+ "dover_plan": "FREE",
+ "enable_talent_network": false,
+ "primary_domain": "mixrank.com",
+ "can_embed": true
+}

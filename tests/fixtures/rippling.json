@@ -1,0 +1,71 @@
+{
+ "items": [
+  {
+   "id": "401593ba-f666-44a4-9c24-107deea0a780",
+   "name": "Partner",
+   "url": "https://ats.rippling.com/saturn/jobs/401593ba-f666-44a4-9c24-107deea0a780",
+   "department": {
+    "name": "Partnerships",
+    "displayName": "Partnerships"
+   },
+   "locations": [
+    {
+     "name": "London, United Kingdom",
+     "country": "United Kingdom",
+     "countryCode": "GB",
+     "state": "England",
+     "stateCode": "ENG",
+     "city": "London",
+     "workplaceType": "ON_SITE"
+    }
+   ],
+   "language": "en-US"
+  },
+  {
+   "id": "f5fcb1ac-2f59-481a-aa12-9d52f8d336a7",
+   "name": "Lead Product Manager",
+   "url": "https://ats.rippling.com/saturn/jobs/f5fcb1ac-2f59-481a-aa12-9d52f8d336a7",
+   "department": {
+    "name": "Product",
+    "displayName": "Product"
+   },
+   "locations": [
+    {
+     "name": "London, United Kingdom",
+     "country": "United Kingdom",
+     "countryCode": "GB",
+     "state": "England",
+     "stateCode": "ENG",
+     "city": "London",
+     "workplaceType": "ON_SITE"
+    }
+   ],
+   "language": "en-GB"
+  },
+  {
+   "id": "f401c3f6-fccd-4793-842a-029bdf55e71e",
+   "name": "Staff Product Manager",
+   "url": "https://ats.rippling.com/saturn/jobs/f401c3f6-fccd-4793-842a-029bdf55e71e",
+   "department": {
+    "name": "Product",
+    "displayName": "Product"
+   },
+   "locations": [
+    {
+     "name": "London, United Kingdom",
+     "country": "United Kingdom",
+     "countryCode": "GB",
+     "state": "England",
+     "stateCode": "ENG",
+     "city": "London",
+     "workplaceType": "ON_SITE"
+    }
+   ],
+   "language": "en-US"
+  }
+ ],
+ "page": 0,
+ "pageSize": 20,
+ "totalItems": 4,
+ "totalPages": 1
+}

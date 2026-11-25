@@ -1,0 +1,57 @@
+{# Small reusable bits of HTML, used by several pages. #}
+
+{% macro job_badges(j) -%}
+  {% if j.is_internship == 1 %}<span class="badge good">Internship</span>{% endif %}
+  {% if j.remote == 1 %}<span class="badge">Remote</span>{% elif j.remote == 0 %}<span class="badge plain">On-site / hybrid</span>{% endif %}
+  {% if j.employment_type and j.employment_type != 'Internship' %}<span class="badge plain">{{ j.employment_type }}</span>{% endif %}
+  <span class="badge plain" title="How we found this job">{{ TIER_NAMES[j.source_tier] }}</span>
+{%- endmacro %}
+
+{% macro sources(list) -%}
+  {% for s in list %}<span class="badge {{ 'warn' if s == 'yc' else 'plain' }}">{{ 'YC' if s == 'yc' else 'HN' if s == 'hn' else s }}</span>{% endfor %}
+{%- endmacro %}
+
+{% macro score(n) -%}
+  <span class="score" title="quality_score: how good a target this company is (0-100)">{{ n }}</span>
+{%- endmacro %}
+
+{% macro pager(nav) -%}
+  {% if nav.pages > 1 %}
+  <div class="pager">
+    {% if nav.prev %}<a href="{{ nav.prev }}">← Previous</a>{% else %}<span class="muted">← Previous</span>{% endif %}
+    <span class="muted">Page {{ nav.page }} of {{ nav.pages }}</span>
+    {% if nav.next %}<a href="{{ nav.next }}">Next →</a>{% else %}<span class="muted">Next →</span>{% endif %}
+  </div>
+  {% endif %}
+{%- endmacro %}
+
+{% macro job_card(j, show_company=True, careers_url=None) -%}
+  {# no apply link (some LLM-found jobs)? -> send people to the company's careers page instead #}
+  {% set fallback_url = j.company_careers_url or careers_url %}
+  <div class="card job">
+    <div>
+      <div class="title">{{ j.title }}</div>
+      <div class="meta">
+        {% if show_company %}<a href="/companies/{{ j.company_id }}">{{ j.company_name }}</a>
+          {% if j.yc_batch %}<span class="small">({{ j.yc_batch }})</span>{% endif %} · {% endif %}
+        {{ j.location or 'Location not stated' }}
+        {% if j.team %} · {{ j.team }}{% endif %}
+        {% if j.posted_at %} · posted {{ j.posted_at | day }}{% else %} · first seen {{ j.first_seen_at | day }}{% endif %}
+      </div>
+    </div>
+    <div class="actions">
+      {% if j.apply_url %}
+        <a class="button" href="{{ j.apply_url }}" target="_blank" rel="noopener">{{ 'Read post' if j.source_tier == 0 else 'Apply' }} ↗</a>
+      {% elif fallback_url %}
+        <a class="button secondary" href="{{ fallback_url }}" target="_blank" rel="noopener" title="This job had no direct link">Careers page ↗</a>
+      {% endif %}
+    </div>
+    <div>{{ job_badges(j) }}</div>
+    {% if j.description %}
+    <details>
+      <summary>Description</summary>
+      <div class="desc">{{ j.description[:3000] }}{% if j.description|length > 3000 %}…{% endif %}</div>
+    </details>
+    {% endif %}
+  </div>
+{%- endmacro %}

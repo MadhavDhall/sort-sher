@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% from "_macros.html" import job_card, sources, score %}
+{% block title %}{{ c.name }}{% endblock %}
+{% block content %}
+<p class="small"><a href="/companies">← All companies</a></p>
+<h1>{{ c.name }} {{ sources(c.sources) }}</h1>
+{% if c.description %}<p class="muted">{{ c.description }}</p>{% endif %}
+<p>
+  {% if c.website %}<a href="{{ c.website }}" target="_blank" rel="noopener">Website ↗</a>{% endif %}
+  {% if c.careers_url %} · <a href="{{ c.careers_url }}" target="_blank" rel="noopener">Careers page ↗</a>{% endif %}
+  {% if c.yc_slug %} · <a href="https://www.ycombinator.com/companies/{{ c.yc_slug }}" target="_blank" rel="noopener">YC profile ↗</a>{% endif %}
+</p>
+
+<div class="facts">
+  <div class="fact"><div class="k">Quality score</div><div class="v">{{ score(c.quality_score) }} / 100</div></div>
+  <div class="fact"><div class="k">YC batch</div><div class="v">{{ c.yc_batch or '—' }}</div></div>
+  <div class="fact"><div class="k">Stage</div><div class="v">{{ c.stage or '—' }}</div></div>
+  <div class="fact"><div class="k">Team size</div><div class="v">{{ c.team_size or '—' }}</div></div>
+  <div class="fact"><div class="k">Hiring signal</div><div class="v">{{ 'Yes' if c.is_hiring else 'No' if c.is_hiring == False else '—' }}</div></div>
+  <div class="fact"><div class="k">Locations</div><div class="v">{{ c.locations | join(', ') or '—' }}</div></div>
+  <div class="fact"><div class="k">Job board (ATS)</div><div class="v">{{ (c.ats_type.value ~ ' / ' ~ c.ats_slug) if c.ats_type else '—' }}</div></div>
+  <div class="fact"><div class="k">Contact</div><div class="v">{{ c.contact or '—' }}</div></div>
+  <div class="fact"><div class="k">Last crawled</div><div class="v">{{ (c.last_crawled_at | string)[:16] if c.last_crawled_at else 'not yet' }}</div></div>
+</div>
+
+{% if c.tags %}<p>{% for t in c.tags %}<span class="badge plain">{{ t }}</span>{% endfor %}</p>{% endif %}
+
+<div class="two-col">
+  <div>
+    <h2>Why this score?</h2>
+    <div class="table-wrap">
+      <table>
+        {% for reason, points in reasons %}
+          <tr><td>{{ reason }}</td><td class="num">+{{ points }}</td></tr>
+        {% endfor %}
+        <tr><td><strong>Total</strong> <span class="muted small">(capped at 100)</span></td><td class="num"><strong>{{ c.quality_score }}</strong></td></tr>
+      </table>
+    </div>
+  </div>
+  <div>
+    <h2>Crawl status</h2>
+    <div class="card">
+      <div>Discover: <strong>{{ c.discover_status or 'not run' }}</strong></div>
+      <div>Crawl: <strong>{{ c.crawl_status or 'not run' }}</strong></div>
+      {% if c.crawl_error %}<div class="muted small" style="margin-top:.4rem">Notes: {{ c.crawl_error }}</div>{% endif %}
+    </div>
+  </div>
+</div>
+
+<h2>Open roles ({{ active_jobs | length }})</h2>
+{% if active_jobs %}
+  <div class="list">{% for j in active_jobs %}{{ job_card(j, show_company=False, careers_url=c.careers_url) }}{% endfor %}</div>
+{% else %}
+  <div class="card muted">No open roles found right now. Many startups still take interns without posting a role.
+    {% if c.contact %}You can reach them at <strong>{{ c.contact }}</strong>.{% endif %}</div>
+{% endif %}
+
+{% if old_jobs %}
+<details style="margin-top:1.5rem">
+  <summary>{{ old_jobs | length }} closed / removed role{{ '' if old_jobs|length == 1 else 's' }} (history)</summary>
+  <div class="list" style="margin-top:.6rem">{% for j in old_jobs %}{{ job_card(j, show_company=False, careers_url=c.careers_url) }}{% endfor %}</div>
+</details>
+{% endif %}
+{% endblock %}

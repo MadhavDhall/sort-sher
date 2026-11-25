@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% from "_macros.html" import sources, score, pager %}
+{% block title %}Companies{% endblock %}
+{% block content %}
+<h1>Companies</h1>
+<p class="muted">{{ nav.total }} compan{{ 'y' if nav.total == 1 else 'ies' }} match. Companies are kept even with no posted roles: many hire interns without posting.</p>
+
+<form class="filters" method="get" action="/companies">
+  <input type="search" name="q" value="{{ f.q }}" placeholder="Search name, one-liner, tags…">
+  <label class="check"><input type="checkbox" name="has_jobs" value="1" {{ 'checked' if f.has_jobs }}> Has open roles</label>
+  <label class="check"><input type="checkbox" name="has_internships" value="1" {{ 'checked' if f.has_internships }}> Has internships</label>
+  <label class="check"><input type="checkbox" name="hiring" value="1" {{ 'checked' if f.hiring }}> Marked hiring</label>
+  <select name="source">
+    <option value="">YC + HN</option>
+    <option value="yc" {{ 'selected' if f.source == 'yc' }}>YC</option>
+    <option value="hn" {{ 'selected' if f.source == 'hn' }}>HN</option>
+  </select>
+  <select name="ats" title="Job board system">
+    <option value="">Any ATS</option>
+    {% for a in ATS_TYPES %}<option value="{{ a }}" {{ 'selected' if f.ats == a }}>{{ a|capitalize }}</option>{% endfor %}
+  </select>
+  <label class="check">Min score <input type="number" name="min_score" min="0" max="100" value="{{ f.min_score }}"></label>
+  <select name="sort">
+    <option value="score" {{ 'selected' if f.sort == 'score' }}>Best score</option>
+    <option value="jobs" {{ 'selected' if f.sort == 'jobs' }}>Most open roles</option>
+    <option value="interns" {{ 'selected' if f.sort == 'interns' }}>Most internships</option>
+    <option value="batch" {{ 'selected' if f.sort == 'batch' }}>YC batch</option>
+    <option value="name" {{ 'selected' if f.sort == 'name' }}>Name A–Z</option>
+  </select>
+  <button type="submit">Filter</button>
+  <a href="/companies" class="small">Reset</a>
+</form>
+
+{% if companies %}
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Company</th><th class="num">Score</th><th>Source</th><th>Batch</th><th class="num">Team</th>
+        <th class="num">Open roles</th><th class="num">Internships</th><th>ATS</th><th>Last crawl</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in companies %}
+      <tr>
+        <td>
+          <a href="/companies/{{ c.id }}"><strong>{{ c.name }}</strong></a>
+          {% if c.description %}<div class="muted small">{{ c.description[:110] }}{% if c.description|length > 110 %}…{% endif %}</div>{% endif %}
+        </td>
+        <td class="num">{{ score(c.quality_score) }}</td>
+        <td>{{ sources(c.sources) }}</td>
+        <td class="small">{{ c.yc_batch or '—' }}</td>
+        <td class="num">{{ c.team_size or '—' }}</td>
+        <td class="num">{{ c.active_jobs or '—' }}</td>
+        <td class="num">{% if c.internships %}<span class="badge good">{{ c.internships }}</span>{% else %}—{% endif %}</td>
+        <td class="small">{{ c.ats_type or '—' }}</td>
+        <td class="small">
+          {% if c.crawl_status == 'ok' %}<span class="badge good">ok</span>
+          {% elif c.crawl_status == 'no_jobs' %}<span class="badge plain">no jobs</span>
+          {% elif c.crawl_status %}<span class="badge bad">{{ c.crawl_status }}</span>
+          {% else %}<span class="muted">not yet</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{{ pager(nav) }}
+{% else %}
+  <div class="card empty">No companies match. Seed some from the <a href="/admin">Admin</a> page.</div>
+{% endif %}
+{% endblock %}

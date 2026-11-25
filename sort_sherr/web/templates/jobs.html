@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% from "_macros.html" import job_card, pager %}
+{% block title %}Jobs{% endblock %}
+{% block content %}
+<h1>Open roles</h1>
+<p class="muted">{{ nav.total }} active job{{ '' if nav.total == 1 else 's' }} match. Best companies first by default.</p>
+
+<form class="filters" method="get" action="/">
+  <input type="search" name="q" value="{{ f.q }}" placeholder="Search title, company, location, team…">
+  <label class="check"><input type="checkbox" name="internship" value="1" {{ 'checked' if f.internship }}> Internships only</label>
+  <select name="remote" title="Work location">
+    <option value="">Remote or not</option>
+    <option value="remote" {{ 'selected' if f.remote == 'remote' }}>Remote only</option>
+    <option value="onsite" {{ 'selected' if f.remote == 'onsite' }}>On-site / hybrid only</option>
+  </select>
+  <select name="source" title="Where the company came from">
+    <option value="">YC + HN</option>
+    <option value="yc" {{ 'selected' if f.source == 'yc' }}>YC companies</option>
+    <option value="hn" {{ 'selected' if f.source == 'hn' }}>HN companies</option>
+  </select>
+  <select name="tier" title="How the job was found">
+    <option value="">Any source</option>
+    {% for t, name in TIER_NAMES.items() %}
+      <option value="{{ t }}" {{ 'selected' if f.tier == t }}>{{ name }}</option>
+    {% endfor %}
+  </select>
+  <label class="check" title="Only companies with at least this quality_score">Min score
+    <input type="number" name="min_score" min="0" max="100" value="{{ f.min_score }}"></label>
+  <select name="sort">
+    <option value="score" {{ 'selected' if f.sort == 'score' }}>Best companies</option>
+    <option value="newest" {{ 'selected' if f.sort == 'newest' }}>Newest</option>
+    <option value="company" {{ 'selected' if f.sort == 'company' }}>Company A–Z</option>
+  </select>
+  <button type="submit">Filter</button>
+  <a href="/" class="small">Reset</a>
+</form>
+
+{% if jobs %}
+  <div class="list">
+    {% for j in jobs %}{{ job_card(j) }}{% endfor %}
+  </div>
+  {{ pager(nav) }}
+{% else %}
+  <div class="card empty">No jobs match these filters. {% if not f.q and not f.internship %}Run a crawl from the <a href="/admin">Admin</a> page.{% endif %}</div>
+{% endif %}
+{% endblock %}

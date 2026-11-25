@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% block title %}Admin{% endblock %}
+{% block content %}
+<h1>Admin</h1>
+<p class="muted">See how the data looks, and fetch new data. Each button runs the same command you could type in the terminal.</p>
+
+{% if not llm_on %}
+<div class="notice">Tier 3 (LLM) is <strong>off</strong>: no <code>GEMINI_API_KEY</code> in <code>.env</code>. Crawls still work, but pages without an ATS or JSON-LD will be skipped.</div>
+{% endif %}
+
+<!-- ---------- numbers ---------- -->
+<div class="stats">
+  <div class="stat"><div class="n">{{ s.companies }}</div><div class="k">Companies</div></div>
+  <div class="stat"><div class="n">{{ s.jobs_active }}</div><div class="k">Active jobs</div></div>
+  <div class="stat"><div class="n">{{ s.internships_active }}</div><div class="k">Active internships</div></div>
+  <div class="stat"><div class="n">{{ s.jobs_inactive }}</div><div class="k">Closed jobs (history)</div></div>
+  <div class="stat"><div class="n">{{ dict(s.crawl_status).get('ok', 0) }}</div><div class="k">Companies crawled OK</div></div>
+  <div class="stat"><div class="n">{{ 'on' if llm_on else 'off' }}</div><div class="k">LLM tier ({{ llm_model }})</div></div>
+</div>
+
+<div class="two-col" style="margin-top:.8rem">
+  {% for title, rows, labels in [
+      ("Companies per tier", s.companies_by_tier, TIER_NAMES),
+      ("Active jobs per tier", s.jobs_by_tier, TIER_NAMES),
+      ("Job boards (ATS) detected", s.ats_type, {}),
+      ("Crawl status", s.crawl_status, {}),
+      ("Discover status", s.discover_status, {}),
+      ("Companies by source", s.companies_by_source, {'["yc"]': 'YC only', '["hn"]': 'HN only', '["hn", "yc"]': 'YC + HN'}),
+    ] %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>{{ title }}</th><th class="num">Count</th></tr></thead>
+      <tbody>
+        {% for key, n in rows %}<tr><td>{{ labels.get(key, key) }}</td><td class="num">{{ n }}</td></tr>
+        {% else %}<tr><td class="muted" colspan="2">nothing yet</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endfor %}
+</div>
+
+<!-- ---------- get new data ---------- -->
+<h2>Get new data</h2>
+<div class="actions-grid">
+  <form class="card action" method="post" action="/admin/run">
+    <input type="hidden" name="action" value="refresh">
+    <h3>⚡ Full refresh</h3>
+    <p>Reload YC + this month's HN thread, find careers pages for the best companies, then crawl them.</p>
+    <div class="row"><label>Top N companies <input type="number" name="limit" value="50" min="1" max="5000"></label></div>
+    <div class="row"><label>Min score <input type="number" name="min_score" value="40" min="0" max="100"></label></div>
+    <button type="submit" {{ 'disabled' if busy }}>Run full refresh</button>
+  </form>
+
+  <form class="card action" method="post" action="/admin/run">
+    <input type="hidden" name="action" value="seed">
+    <h3>1 · Seed companies</h3>
+    <p>Load companies from the YC list or the latest HN "Who is hiring?" thread.</p>
+    <div class="row">
+      <select name="source"><option value="yc">YC</option><option value="hn">HN</option></select>
+      <label>Limit <input type="number" name="limit" value="0" min="0" title="0 = all"></label>
+    </div>
+    <label class="check small"><input type="checkbox" name="hiring_only" value="1"> YC: only companies marked hiring</label>
+    <button type="submit" {{ 'disabled' if busy }}>Seed</button>
+  </form>
+
+  <form class="card action" method="post" action="/admin/run">
+    <input type="hidden" name="action" value="discover">
+    <h3>2 · Discover careers pages</h3>
+    <p>Find each company's careers page and job board (ATS). Best companies first.</p>
+    <div class="row">
+      <select name="source"><option value="">YC + HN</option><option value="yc">YC</option><option value="hn">HN</option></select>
+      <label>Limit <input type="number" name="limit" value="50" min="0"></label>
+    </div>
+    <label class="check small"><input type="checkbox" name="redo" value="1"> Re-check companies already discovered</label>
+    <button type="submit" {{ 'disabled' if busy }}>Discover</button>
+  </form>
+
+  <form class="card action" method="post" action="/admin/run">
+    <input type="hidden" name="action" value="crawl">
+    <h3>3 · Crawl jobs</h3>
+    <p>Fetch open roles: ATS API → JSON-LD → browser → LLM.</p>
+    <div class="row">
+      <select name="source"><option value="">YC + HN</option><option value="yc">YC</option><option value="hn">HN</option></select>
+      <label>Limit <input type="number" name="limit" value="0" min="0" title="0 = all discovered"></label>
+      <label>Min score <input type="number" name="min_score" value="40" min="0" max="100"></label>
+    </div>
+    <div class="row">
+      <select name="status" title="Only retry companies whose last crawl had this result">
+        <option value="">All discovered companies</option>
+        {% for st in statuses %}<option value="{{ st }}">Only: {{ st }}</option>{% endfor %}
+      </select>
+    </div>
+    <button type="submit" {{ 'disabled' if busy }}>Crawl</button>
+  </form>
+</div>
+
+<!-- ---------- current task ---------- -->
+<h2>Current task</h2>
+<div class="card" id="task-card">
+  {% if task %}
+    <div class="task-head">
+      <div>
+        <strong id="task-title">{{ task.title }}</strong>
+        <span id="task-status" class="badge {{ 'warn' if task.status == 'running' else 'good' if task.status == 'done' else 'bad' }}">{{ task.status }}</span>
+        <div class="muted small">started {{ task.started_at or '…' }}</div>
+      </div>
+      <form method="post" action="/admin/stop" id="stop-form" {{ 'hidden' if not busy }}>
+        <button class="danger" type="submit">Stop</button>
+      </form>
+    </div>
+    <pre class="log" id="task-log">{{ task.log | join('\n') }}</pre>
+  {% else %}
+    <p class="muted" style="margin:0">No task has run since the server started. Use a button above.</p>
+  {% endif %}
+</div>
+
+{% if history %}
+<h2>Recent tasks</h2>
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>Task</th><th>Commands</th><th>Status</th><th>Started</th><th>Finished</th></tr></thead>
+    <tbody>
+      {% for t in history %}
+      <tr>
+        <td>{{ t.title }}</td>
+        <td class="small"><code>{{ t.commands | join(' → ') }}</code></td>
+        <td><span class="badge {{ 'good' if t.status == 'done' else 'bad' }}">{{ t.status }}</span></td>
+        <td class="small">{{ t.started_at }}</td>
+        <td class="small">{{ t.finished_at }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<h2>Latest failures</h2>
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>Company</th><th>Status</th><th>Why</th></tr></thead>
+    <tbody>
+      {% for name, status, detail in s.failures %}
+        <tr><td>{{ name }}</td><td><span class="badge bad">{{ status }}</span></td><td class="small muted">{{ detail[:300] }}</td></tr>
+      {% else %}<tr><td colspan="3" class="muted">No failures 🎉</td></tr>{% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<script>
+  // While a task runs, ask the server for its log every 2 seconds and show it.
+  // When it finishes, reload the page once so the numbers above are fresh.
+  const busy = {{ 'true' if busy else 'false' }};
+  if (busy) {
+    const log = document.getElementById("task-log");
+    const statusBadge = document.getElementById("task-status");
+    const timer = setInterval(async () => {
+      try {
+        const res = await fetch("/admin/task");
+        const data = await res.json();
+        if (!data.task) return;
+        const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
+        log.textContent = data.task.log.join("\n");
+        if (atBottom) log.scrollTop = log.scrollHeight;  // follow the log, unless you scrolled up
+        statusBadge.textContent = data.task.status;
+        if (!data.busy) { clearInterval(timer); location.reload(); }
+      } catch (e) { /* server restarting? try again next tick */ }
+    }, 2000);
+    log.scrollTop = log.scrollHeight;
+  }
+</script>
+{% endblock %}

@@ -1,0 +1,78 @@
+[
+ {
+  "absolute_url": "https://jobs.gem.com/rootly/4015886007",
+  "content": "<h3><strong>About Rootly</strong></h3><div><br></div><div>At <a href=\"https://rootly.com/\" rel=\"noopener noreferrer\" target=\"_blank\">Rootly</a>, we are on a mission to be the go-to way companies respond when things go wrong, helping every organization be more reliable.  We do this by building an ind",
+  "content_plain": "About Rootly\nAt \nRootly\n, we are on a mission to be the go-to way companies respond when things go wrong, helping every organization be more reliable.  We do this by building an industry-leading incid",
+  "created_at": "2023-04-17T14:10:42.000Z",
+  "departments": [
+   {
+    "child_ids": [],
+    "id": "4005912007",
+    "name": "Engineering",
+    "parent_id": null
+   }
+  ],
+  "employment_type": "full_time",
+  "first_published_at": "2023-04-17T14:11:41.000Z",
+  "id": "4015886007",
+  "internal_job_id": "4015334007",
+  "location": {
+   "name": "Toronto, Canada"
+  },
+  "location_type": "hybrid",
+  "offices": [
+   {
+    "child_ids": [],
+    "child_office_external_ids": [],
+    "id": "bG9jOvvCBF8ROiNPY4ELDlbMOtE",
+    "location": {
+     "name": "Toronto, Canada"
+    },
+    "name": "Toronto (Hybrid)",
+    "parent_id": null,
+    "parent_office_external_id": null
+   }
+  ],
+  "requisition_id": "5",
+  "title": "Senior Product Engineer",
+  "updated_at": "2026-11-19T21:49:12.963Z"
+ },
+ {
+  "absolute_url": "https://jobs.gem.com/rootly/4015887007",
+  "content": "<h3><strong>About Rootly</strong></h3><div><br></div><div>At <a href=\"https://rootly.com/\" rel=\"noopener noreferrer\" target=\"_blank\">Rootly</a>, we are on a mission to be the go-to way companies respond when things go wrong, helping every organization be more reliable.  We do this by building an ind",
+  "content_plain": "About Rootly\nAt \nRootly\n, we are on a mission to be the go-to way companies respond when things go wrong, helping every organization be more reliable.  We do this by building an industry-leading incid",
+  "created_at": "2023-04-17T14:13:28.000Z",
+  "departments": [
+   {
+    "child_ids": [],
+    "id": "4005911007",
+    "name": "Sales",
+    "parent_id": null
+   }
+  ],
+  "employment_type": "full_time",
+  "first_published_at": "2023-04-17T14:13:49.000Z",
+  "id": "4015887007",
+  "internal_job_id": "4015335007",
+  "location": {
+   "name": "Toronto, Canada"
+  },
+  "location_type": "hybrid",
+  "offices": [
+   {
+    "child_ids": [],
+    "child_office_external_ids": [],
+    "id": "bG9jOvvCBF8ROiNPY4ELDlbMOtE",
+    "location": {
+     "name": "Toronto, Canada"
+    },
+    "name": "Toronto (Hybrid)",
+    "parent_id": null,
+    "parent_office_external_id": null
+   }
+  ],
+  "requisition_id": "6",
+  "title": "Enterprise Account Executive",
+  "updated_at": "2026-11-19T23:59:28.155Z"
+ }
+]

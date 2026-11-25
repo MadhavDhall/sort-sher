@@ -1,0 +1,53 @@
+{
+ "jobs": [
+  {
+   "id": "6be878a5-1511-403a-a476-2001f9c92bc2",
+   "title": "Client Growth Manager",
+   "department": "Client Growth",
+   "team": "Client Growth",
+   "employmentType": "FullTime",
+   "location": "San Francisco",
+   "secondaryLocations": [],
+   "publishedAt": "2026-11-19T17:17:51.924+00:00",
+   "isListed": true,
+   "isRemote": false,
+   "workplaceType": "OnSite",
+   "address": {
+    "postalAddress": {
+     "addressRegion": "California",
+     "addressCountry": "United States",
+     "addressLocality": "San Francisco"
+    }
+   },
+   "jobUrl": "https://jobs.ashbyhq.com/conveo/6be878a5-1511-403a-a476-2001f9c92bc2",
+   "applyUrl": "https://jobs.ashbyhq.com/conveo/6be878a5-1511-403a-a476-2001f9c92bc2/application",
+   "descriptionHtml": "<p style=\"min-height:1.5em\"><strong>Be the face of Conveo to the world's best brands \u2014 and make them wildly successful.</strong></p><h2><br /><strong>What we are building at Conveo</strong></h2><p style=\"min-height:1.5em\">Conveo is the AI research platform enabling fast, affordable, and high-quality consumer / B2B research. Global brands like Unilever, Google, and P&amp;G use our AI video interviewer to generate insights across marketing and product teams.</p><ul style=\"min-height:1.5em\"><li><p ",
+   "descriptionPlain": "Be the face of Conveo to the world's best brands \u2014 and make them wildly successful.\n\n\n\nWHAT WE ARE BUILDING AT CONVEO\n\nConveo is the AI research platform enabling fast, affordable, and high-quality consumer / B2B research. Global brands like Unilever, Google, and P&G use our AI video interviewer to "
+  },
+  {
+   "id": "8379837b-a7cf-4c5a-baf3-1f8866b98a0b",
+   "title": "GTM Associate - Internship",
+   "department": "Ops & People",
+   "team": "Ops & People",
+   "employmentType": "Intern",
+   "location": "Antwerp",
+   "secondaryLocations": [],
+   "publishedAt": "2026-05-28T11:43:54.445+00:00",
+   "isListed": true,
+   "isRemote": false,
+   "workplaceType": "OnSite",
+   "address": {
+    "postalAddress": {
+     "addressRegion": "Antwerp",
+     "addressCountry": "Belgium",
+     "addressLocality": "Antwerp"
+    }
+   },
+   "jobUrl": "https://jobs.ashbyhq.com/conveo/8379837b-a7cf-4c5a-baf3-1f8866b98a0b",
+   "applyUrl": "https://jobs.ashbyhq.com/conveo/8379837b-a7cf-4c5a-baf3-1f8866b98a0b/application",
+   "descriptionHtml": "<p style=\"min-height:1.5em\">Conveo is the AI research platform enabling fast, affordable, and high quality consumer / B2B research. Global brands like Unilever, Google, and Orange use our AI video interviewer across insights, marketing, and product teams.</p><p style=\"min-height:1.5em\"></p><h1>The Problem</h1><p style=\"min-height:1.5em\">The current/traditional research methods companies rely on are slow, expensive, and superficial. Running great research also requires expertise which is a blocke",
+   "descriptionPlain": "Conveo is the AI research platform enabling fast, affordable, and high quality consumer / B2B research. Global brands like Unilever, Google, and Orange use our AI video interviewer across insights, marketing, and product teams.\n\n\n\n\nTHE PROBLEM\n\nThe current/traditional research methods companies rely"
+  }
+ ],
+ "apiVersion": "1"
+}

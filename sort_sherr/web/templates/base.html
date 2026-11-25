@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en" data-theme="lion">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Sort Sherr{% endblock %} · Sort Sherr</title>
+  <script>
+    // Apply the saved theme BEFORE the page draws, so it never flashes the wrong colors.
+    // Themes: "lion" (default) or "classic" (the original look). Saved in this browser only.
+    try {
+      const saved = localStorage.getItem("sortsherr-theme");
+      if (saved === "lion" || saved === "classic") document.documentElement.dataset.theme = saved;
+    } catch (e) { /* storage blocked (private window): just use the default */ }
+  </script>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <div class="bar">
+      <a class="logo" href="/"><span class="mark" aria-hidden="true">🦁</span>Sort <span>Sherr</span></a>
+      <nav>
+        <a href="/" class="{{ 'on' if active == 'jobs' }}">Jobs</a>
+        <a href="/companies" class="{{ 'on' if active == 'companies' }}">Companies</a>
+        <a href="/admin" class="{{ 'on' if active == 'admin' }}">Admin</a>
+      </nav>
+      <button type="button" class="theme-switch" id="theme-switch" title="Switch theme">Theme</button>
+    </div>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  <script>
+    // The header button switches between the two themes and remembers the choice.
+    (function () {
+      const btn = document.getElementById("theme-switch");
+      const label = () => {
+        const lion = document.documentElement.dataset.theme !== "classic";
+        btn.textContent = lion ? "🦁 Lion" : "◻ Classic";
+        btn.title = lion ? "Theme: Lion. Click for the Classic (original) theme" : "Theme: Classic. Click for the Lion theme";
+      };
+      btn.addEventListener("click", () => {
+        const next = document.documentElement.dataset.theme === "classic" ? "lion" : "classic";
+        document.documentElement.dataset.theme = next;
+        try { localStorage.setItem("sortsherr-theme", next); } catch (e) {}
+        label();
+      });
+      label();
+    })();
+  </script>
+</body>
+</html>
