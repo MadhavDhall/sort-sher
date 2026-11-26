@@ -3,12 +3,12 @@
 Sort Sherr helps college students find **off-campus internships at good startups**, with
 YC-backed and recently funded companies first.
 
-The full project has four parts. **This repo is Part 1.**
+The full project has four parts. **Parts 1 and 2 are built.**
 
 | # | Part | Status |
 |---|---|---|
-| 1 | **Ingestion**: collect startups and their open roles | ✅ Built (this repo) |
-| 2 | Resume parsing + matching (embeddings + LLM reranking) | ⏳ Not started |
+| 1 | **Ingestion**: collect startups and their open roles | ✅ Built |
+| 2 | **Resume parsing + matching** (embeddings + LLM reranking) | ✅ Built ([jump to Part 2](#part-2-resume--matching)) |
 | 3 | Personalized email drafting based on company research | ⏳ Not started |
 | 4 | Outreach tracker (sent / replied / follow-up dates) | ⏳ Not started |
 
@@ -122,9 +122,13 @@ your exact numbers, open AI Studio → your project → **Rate limits**. To stay
 
 If you hit the daily cap, run `crawl` again the next day. Already-cached pages cost nothing.
 
-> ⚠️ On the free tier, Google may use what you send to improve its products. We only send public
-> careers pages, so that's fine here. **Don't** use the free tier for private data like resumes
-> (relevant for Part 2).
+> ⚠️ On the free tier, Google may use what you send to improve its products. Part 1 only sends
+> public careers pages. Part 2 sends your resume **with your name, email, phone, links and ID
+> numbers removed first, on your computer** (see [Part 2](#part-2-resume--matching)).
+
+**"503 UNAVAILABLE / high demand".** Sometimes a free model is overloaded for a while. The app
+retries 3 times; if it still fails, run the same command later (finished work is cached), or try
+the other free model for one run: `SORT_SHERR_LLM_MODEL=gemini-3.5-flash python -m sort_sherr.cli ...`
 
 ### JavaScript-heavy careers pages (recommended)
 
@@ -187,13 +191,18 @@ ask for it (any username). The server only listens on `127.0.0.1` (this computer
 
 ## Looking at the data
 
-Everything is in one SQLite file, `data/sort_sherr.db`, with three tables:
+Everything is in one SQLite file, `data/sort_sherr.db`:
 
 | Table | One row per | Key columns |
 |---|---|---|
 | `companies` | startup | name, website, yc_batch, team_size, is_hiring, quality_score, careers_url, ats_type, crawl_status |
 | `jobs` | job posting | title, location, remote, is_internship, apply_url, source_tier, first_seen_at, last_seen_at, is_active |
 | `llm_cache` | page the LLM has read | content_hash, jobs_json |
+| `candidate_profiles` | parsed resume (Part 2) | resume_hash, profile_json, pii_json (**stays local**), model |
+| `match_runs` | `match` run | candidate_id, prefs_json, filter_stats, embed_model, llm_model, llm_calls, tokens, cost_usd |
+| `matches` | company in a run's pool | run_id, company_id, job_id, found_by, retrieval/rerank/final score, sub_scores, why_fit, why_this_role, reasons, red_flags |
+| `embeddings` | embedded text | content_hash, model, vector |
+| `rerank_cache` | LLM verdict on one company | cache_key, result_json |
 
 To see active internships, best companies first:
 
@@ -206,6 +215,110 @@ sqlite3 -header -column data/sort_sherr.db "
 ```
 
 ---
+
+## Part 2: resume → matching
+
+You give it your resume. It gives back the ~15 startups that fit you best, each with **why it
+suits you**, the best open role (if any) with **why that role**, evidence that pairs one thing from
+your resume with one fact about the company, and red flags.
+
+```
+resume.pdf ──► text ──► remove name/email/phone/links/IDs (locally) ──► Gemini ──► profile (saved)
+                                                                                     │
+  ~4,600 companies ──► hard filters ──► embeddings (local model) ──► top 75 (+25 from your interests)
+                                                                                     │
+                                        Gemini scores each on a rubric, 5 at a time ◄┘
+                                                                                     │
+                                        final score = 0.85 × LLM + 0.10 × similarity + small boosts
+```
+
+### Setup (once)
+
+```bash
+pip install -e ".[match]"     # pypdf, python-docx, numpy, sentence-transformers (pulls in torch, ~1 GB)
+mkdir -p uploads              # put your resume here: uploads/ is in .gitignore
+```
+
+The first `match` downloads the embedding model (`BAAI/bge-small-en-v1.5`, ~130 MB, runs on your
+computer) and embeds every company (~1–2 minutes). After that, only changed companies are re-embedded.
+
+### On the website (easiest)
+
+```bash
+python -m sort_sherr.cli serve      # then open http://127.0.0.1:8000/match  ("Match me" in the menu)
+```
+
+1. **Upload** your resume (PDF/DOCX). It's saved in `uploads/` under a hash, never sent as-is.
+2. **Confirm** your name (pre-filled from the resume; it's removed before the LLM sees anything) and
+   your graduation year.
+3. On your profile page, see **suggested roles** (from your focus areas and skills, pre-ticked),
+   choose **how many companies to shortlist** (15 / 30 / 50 / 75 / 100 / 150; each option shows
+   the LLM calls and minutes it will take), write your interests, and press *Find my startups*.
+4. Watch the progress live. The results page shows, for each company: why it suits you, the best
+   **posted role** with an Apply button, or the **role to ask for** in a cold email when nothing
+   fitting is posted, evidence, red flags and a score breakdown. **Download CSV** gives you the
+   whole shortlist as a spreadsheet for applying.
+
+"Quick mode" skips the LLM: instant and free, but no reasons. The Match pages need **no password**
+(only `/admin` does). That's fine because the server only listens on this computer (127.0.0.1); don't
+make the site reachable from a network, since anyone who can open it can see the uploaded resumes.
+
+### From the terminal
+
+```bash
+# 1. Parse your resume (prints the profile + your candidate id). It asks two questions:
+#    your name (BEFORE sending, so it can be removed: every template puts it somewhere else)
+#    and your graduation year (AFTER parsing: resumes often don't state it).
+python -m sort_sherr.cli parse-resume uploads/resume.pdf
+python -m sort_sherr.cli parse-resume uploads/resume.pdf --name "First Last" --grad-year 2028   # no questions
+# Same file again = no LLM call; use it to fix the year later.
+
+# 2. Match. Preferences come from flags, not from the resume.
+python -m sort_sherr.cli match --candidate 1
+python -m sort_sherr.cli match --candidate 1 --interests "LLM agents and dev tools, small team, not crypto"
+python -m sort_sherr.cli match --candidate 1 --role ai-ml --role backend --remote-only --window "Summer 2027"
+python -m sort_sherr.cli match --candidate 1 --no-rerank        # embeddings only: free, instant, no LLM
+
+# 3. Everything about one match: sub-scores, evidence, red flags, and exactly what the models saw
+python -m sort_sherr.cli explain --candidate 1 --company 42
+```
+
+| Flag | What it does |
+|---|---|
+| `--interests "..."` / `--interests-file f.txt` | In your own words: what you like and what you're looking for. Adds up to 25 extra companies that match it, and the LLM scores "interest fit". Sent to the LLM as written, so keep personal details out. |
+| `--role` | `any` (default), `sde`, `backend`, `frontend`, `fullstack`, `ai-ml`, `data`, `mobile`, `devops`, `design`, `product`. Repeat for several. |
+| `--remote-only` | Drops companies **known** to be on-site only. Unknown is kept. |
+| `--location India` | Drops companies **known** to be elsewhere (unless they have a remote role). Unknown is kept. |
+| `--paid-only`, `--window "Summer 2027"` | Our data rarely says these, so they don't filter. The LLM flags concerns as red flags. |
+| `--top 50` | Shortlist size (up to 150). The LLM scores ~1.5× this many (at least 75) so it can push weak ones out; every scored company is saved. |
+
+**What the scores mean.** The LLM gives 0–20 for each of: stack overlap, domain fit (your projects
+vs. what they build), interest fit, seniority fit (would they take an intern?), hiring signal
+(intern posting > engineering posting > "is hiring"). Total 0–100. All weights are in
+`sort_sherr/match_config.py`.
+
+**Every run is saved** (`match_runs` + `matches`), with the models used and token counts, so you
+can compare runs after changing preferences or weights.
+
+### Is the LLM rerank worth it? (eval)
+
+```bash
+python -m sort_sherr.cli eval --candidate 1 --make-template --labels labels/me.csv
+# open labels/me.csv, write good / ok / bad in the label column for each company
+python -m sort_sherr.cli eval --candidate 1 --labels labels/me.csv
+```
+
+It prints **precision@15** (share of the top 15 you marked good) and **nDCG@15** (also rewards
+putting the best ones highest) for *retrieval only* vs. *retrieval + rerank*, from the same run,
+plus what the rerank cost in tokens. `labels/` is in `.gitignore`.
+
+### Privacy
+
+- Your resume stays on your computer (`uploads/`, `data/`, both in `.gitignore`).
+- Before the LLM call, your **name, email, phone, URLs and long ID numbers** are cut out locally and
+  stored only in the `pii_json` column. Your name is guessed (a name-like line matching your email
+  or LinkedIn/GitHub username, else the first line), and you **confirm it before anything is sent**.
+- The resume text is never logged or printed. Only the parsed profile is shown.
 
 ## How companies are ranked (quality_score)
 
@@ -246,8 +359,21 @@ Sort sherr/
 ├── CLAUDE.md              ← project rules for the AI coding assistant
 ├── pyproject.toml         ← dependencies
 ├── sort_sherr/
-│   ├── cli.py             ← commands: seed, discover, crawl, stats, serve
-│   ├── web/               ← the website: app.py (routes), runner.py (admin tasks), templates/, static/
+│   ├── cli.py             ← commands: seed, discover, crawl, stats, serve,
+│   │                         parse-resume, match, explain, eval
+│   ├── match_config.py    ← Part 2: every matching number (top-K, weights, boosts, token prices)
+│   ├── matching/          ← Part 2
+│   │   ├── models.py      ← CandidateProfile, Preferences, RerankResult
+│   │   ├── resume.py      ← PDF/DOCX → text → redact → LLM → profile
+│   │   ├── embed.py       ← Embedder interface, local model, embedding cache
+│   │   ├── retrieve.py    ← hard filters + cosine top-K
+│   │   ├── rerank.py      ← rubric prompt, batches, guards, cache
+│   │   ├── rank.py        ← final score formula
+│   │   ├── run.py         ← one match run, start to finish
+│   │   ├── roles.py       ← suggested roles from focus areas / skills
+│   │   └── evaluate.py    ← precision@K, nDCG@K, label CSV
+│   ├── web/               ← the website: app.py (routes), match_pages.py (Match me), runner.py (tasks),
+│   │                         templates/, static/
 │   ├── config.py          ← settings (User-Agent, limits, DB path, LLM model)
 │   ├── models.py          ← data shapes: Company, JobDraft, Job
 │   ├── scoring.py         ← quality_score
@@ -275,4 +401,8 @@ Sort sherr/
   (for example `/inbound`).
 - **JavaScript pages need Playwright installed.** Without it, those pages are read as the empty shell the server sends.
 - **Tier 3 can be wrong.** An LLM saying "no jobs" is less trustworthy than an empty ATS board.
-- **SQLite for now.** We'll move to Postgres + pgvector in Part 2, for resume matching.
+- **SQLite + numpy for now.** ~4,600 vectors fit in memory easily, so no vector DB yet. Postgres +
+  pgvector later if the data grows.
+- **Matching is only as good as the company data.** Most YC companies have a one-line description
+  and no crawled jobs, so the LLM often has little to go on. Run `crawl` on more companies to help.
+- **Gemini free tier can be overloaded** (503) for a while. Re-run later; finished work is cached.

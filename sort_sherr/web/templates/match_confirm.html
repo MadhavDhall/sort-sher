@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Confirm{% endblock %}
+{% block content %}
+<h1>Two quick questions</h1>
+<p class="muted">Resume templates put your name in different places, so please check it. We remove it
+(and your email, phone, links and ID numbers) before the LLM reads your resume.</p>
+
+<form class="card upload" method="post" action="/match/parse">
+  <input type="hidden" name="file_id" value="{{ file_id }}">
+  <label class="field">
+    <span>Your full name, exactly as on the resume</span>
+    <input type="text" name="name" value="{{ guess }}" required minlength="3" maxlength="80" autocomplete="name"
+           placeholder="First Last">
+    {% if guess %}<small class="muted">We found “{{ guess }}”. Fix it if that's wrong.</small>
+    {% else %}<small class="muted">We couldn't find it automatically, so please type it.</small>{% endif %}
+  </label>
+  <label class="field">
+    <span>Graduation (passing-out) year</span>
+    <input type="number" name="grad_year" required min="2000" max="2040" placeholder="2028">
+    <small class="muted">Resumes often don't say this clearly, and it matters for internship timing.</small>
+  </label>
+  <button type="submit" {{ 'disabled' if busy or not llm_on }}>Read my resume</button>
+  {% if not llm_on %}<span class="small muted">Needs a GEMINI_API_KEY in .env.</span>{% endif %}
+</form>
+{% endblock %}

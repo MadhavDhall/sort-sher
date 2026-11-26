@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Shortlist #{{ run.id }}{% endblock %}
+{% block content %}
+<p class="small"><a href="/match/candidates/{{ run.candidate_id }}">← Back to profile &amp; new search</a></p>
+<div class="task-head">
+  <div>
+    <h1>Your top {{ rows | length }} startups</h1>
+    <p class="muted" style="margin:0">
+      Run #{{ run.id }} · {{ run.created_at | day }} ·
+      roles: {{ prefs.roles | join(', ') }}{% if prefs.remote_only %} · remote only{% endif %}
+      {% if prefs.locations %} · {{ prefs.locations | join(', ') }}{% endif %}
+      {% if prefs.window %} · {{ prefs.window }}{% endif %}
+      {% if prefs.interests %}<br>interests: “{{ prefs.interests[:160] }}”{% endif %}
+    </p>
+  </div>
+  <a class="button secondary" href="/match/runs/{{ run.id }}/shortlist.csv">⬇ Download CSV</a>
+</div>
+
+{% if not run.reranked %}
+<div class="notice">Quick mode: ranked by text similarity only, so there are no reasons or role suggestions. Run again without quick mode for the full ranking.</div>
+{% endif %}
+
+<p class="small muted">
+  Checked {{ filter_stats.kept + filter_stats.kept_unknown }} companies after filters
+  {%- for k, v in filter_stats.items() if k.startswith('dropped') %}; {{ v }} {{ k }}{% endfor %}.
+  {{ pool }} best by similarity were {{ 'scored by the LLM' if run.reranked else 'kept' }}.
+  {% if run.reranked %}LLM: {{ run.llm_calls }} calls, {{ '{:,}'.format(run.prompt_tokens + run.output_tokens) }} tokens ($0 on the free tier).{% endif %}
+</p>
+
+<div class="list">
+  {% for m in rows %}
+  <div class="card match">
+    <div class="match-head">
+      <div class="rank">{{ loop.index }}</div>
+      <div class="match-title">
+        <a class="title" href="/companies/{{ m.company_id }}">{{ m.company_name }}</a>
+        {% if m.yc_batch %}<span class="badge warn">YC {{ m.yc_batch }}</span>{% else %}<span class="badge plain">non-YC</span>{% endif %}
+        {% if m.found_by in ('interests', 'both') %}<span class="badge good" title="Found because of what you said you're interested in">matches your interests</span>{% endif %}
+        {% if m.team_size %}<span class="small muted">team of {{ m.team_size }}</span>{% endif %}
+      </div>
+      <div class="match-score" title="Final score (0-100+)">{{ '%.0f' | format(m.final_score) }}</div>
+    </div>
+
+    {% if m.why_fit %}<p class="why">{{ m.why_fit }}</p>
+    {% elif m.description %}<p class="why muted">{{ m.description[:220] }}</p>{% endif %}
+
+    <div class="role-line">
+      {% if m.job_title %}
+        <span class="badge {{ 'good' if m.job_is_internship == 1 else '' }}">{{ 'Internship posted' if m.job_is_internship == 1 else 'Posted role' }}</span>
+        <strong>{{ m.job_title }}</strong>
+        {% if m.why_this_role %}<span class="small muted">: {{ m.why_this_role }}</span>{% endif %}
+        {% if m.apply_url %}<a class="button" href="{{ m.apply_url }}" target="_blank" rel="noopener">Apply ↗</a>{% endif %}
+      {% elif m.pitch_role %}
+        <span class="badge plain" title="No matching posting: ask for this role in a cold email">Ask for</span>
+        <strong>{{ m.pitch_role }}</strong>
+        {% if m.careers_url or m.website %}<a class="button secondary" href="{{ m.careers_url or m.website }}" target="_blank" rel="noopener">{{ 'Careers page' if m.careers_url else 'Website' }} ↗</a>{% endif %}
+      {% elif m.website %}
+        <a class="small" href="{{ m.website }}" target="_blank" rel="noopener">{{ m.website }} ↗</a>
+      {% endif %}
+    </div>
+
+    {% if m.reasons %}
+    <ul class="evidence">
+      {% for e in m.reasons %}<li><span class="you">You:</span> {{ e.resume_item }} <span class="arrow">→</span> <span class="them">They:</span> {{ e.company_fact }}</li>{% endfor %}
+    </ul>
+    {% endif %}
+
+    {% if m.red_flags %}<div class="flags">{% for f in m.red_flags %}<span class="badge bad">⚠ {{ f }}</span>{% endfor %}</div>{% endif %}
+
+    {% if m.sub_scores %}
+    <details>
+      <summary>Score breakdown</summary>
+      <div class="bars">
+        {% for k, v in m.sub_scores.items() %}
+        <div class="bar-row"><span>{{ k.replace('_', ' ') }}</span><div class="meter"><i style="width: {{ v * 5 }}%"></i></div><b>{{ v }}/20</b></div>
+        {% endfor %}
+      </div>
+      <p class="small muted">LLM {{ m.rerank_score }}/100 · similarity {{ '%.3f' | format(m.retrieval_score) }} · final {{ m.final_score }}
+        · full details: <code>explain --candidate {{ run.candidate_id }} --company {{ m.company_id }} --run {{ run.id }}</code></p>
+    </details>
+    {% endif %}
+  </div>
+  {% else %}
+  <div class="empty">No companies in this run. Try fewer filters.</div>
+  {% endfor %}
+</div>
+
+{% if pool > rows | length %}
+<p class="pager"><a href="?n={{ pool }}">Show all {{ pool }} scored companies</a></p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}{{ p.name or 'Candidate' }}{% endblock %}
+{% block content %}
+<p class="small"><a href="/match">← All resumes</a></p>
+<h1>{{ p.name or 'Candidate #' ~ cid }}</h1>
+<p class="muted">
+  {% for e in p.education[:1] %}{{ e.degree or '' }} {{ e.branch or '' }}{% if e.college %}, {{ e.college }}{% endif %}{% if e.grad_date %} · graduating {{ e.grad_date }}{% endif %}{% endfor %}
+</p>
+
+<div class="two-col">
+  <!-- ---------- what we read ---------- -->
+  <div class="card">
+    <h3 class="card-h">What we read from your resume</h3>
+    <div class="kv"><span>Focus</span><div>{% for f in p.focus_areas %}<span class="badge">{{ f }}</span>{% endfor %}</div></div>
+    <div class="kv"><span>Skills</span><div>{% for s in p.skills %}<span class="badge plain">{{ s }}</span>{% endfor %}</div></div>
+    <div class="kv"><span>Projects</span>
+      <ul class="tight">{% for pr in p.projects %}<li><strong>{{ pr.title }}</strong>
+        {% if pr.tech_stack %}<span class="small muted">({{ pr.tech_stack | join(', ') }})</span>{% endif %}
+        {% if pr.impact %}<span class="small"> · {{ pr.impact }}</span>{% endif %}</li>{% endfor %}</ul>
+    </div>
+    {% if p.experience %}
+    <div class="kv"><span>Experience</span>
+      <ul class="tight">{% for e in p.experience %}<li>{{ e.role }}{% if e.organization %} @ {{ e.organization }}{% endif %}</li>{% endfor %}</ul>
+    </div>
+    {% endif %}
+    <p class="small muted">Wrong graduation year? Run <code>parse-resume &lt;file&gt; --grad-year 2028</code> (no LLM call).</p>
+  </div>
+
+  <!-- ---------- suggested roles ---------- -->
+  <div class="card">
+    <h3 class="card-h">Roles we suggest for you</h3>
+    {% if suggestions %}
+    <ul class="tight">
+      {% for role, why in suggestions %}<li><strong>{{ role }}</strong> <span class="small muted">({{ why }})</span></li>{% endfor %}
+    </ul>
+    <p class="small muted">They're ticked in the form below. Untick any you don't want. Companies whose open roles
+      don't fit are skipped, but companies with <em>no</em> posted roles are always kept: most startups take interns without posting.</p>
+    {% else %}<p class="muted">Not enough on the resume to suggest roles; pick them below.</p>{% endif %}
+  </div>
+</div>
+
+<!-- ---------- match form ---------- -->
+<h2>Find matching startups</h2>
+<form class="card match-form" method="post" action="/match/candidates/{{ cid }}/run">
+  <label class="field">
+    <span>How many companies do you want to shortlist?</span>
+    <select name="shortlist">
+      {% for n, calls, minutes in shortlist_options %}
+      <option value="{{ n }}" {{ 'selected' if n == 50 }}>{{ n }} companies (~{{ calls }} LLM calls, ~{{ minutes }} min)</option>
+      {% endfor %}
+    </select>
+    <small class="muted">Off-campus, aim wide: 50–100 is a good start. The LLM checks about 1.5× this many so it can drop weak ones.</small>
+  </label>
+
+  <div class="field">
+    <span>Roles</span>
+    <div class="checks">
+      {% set suggested = suggestions | map('first') | list %}
+      {% for r in roles if r != 'any' %}
+      <label class="check"><input type="checkbox" name="role" value="{{ r }}" {{ 'checked' if r in suggested }}> {{ r }}</label>
+      {% endfor %}
+    </div>
+    <small class="muted">None ticked = any role.</small>
+  </div>
+
+  <label class="field">
+    <span>In your own words: what are you interested in, and what are you looking for?</span>
+    <textarea name="interests" rows="3" maxlength="1000"
+      placeholder="e.g. LLM agents and dev tools; I want to ship to production in a small team; not crypto"></textarea>
+    <small class="muted">This also finds extra companies that match what you <em>want</em>, not just what you've done. It's sent to the LLM as written, so leave out personal details.</small>
+  </label>
+
+  <div class="row-fields">
+    <label class="field"><span>Locations (comma-separated)</span>
+      <input type="text" name="locations" maxlength="200" placeholder="e.g. India, Remote"></label>
+    <label class="field"><span>When can you intern?</span>
+      <input type="text" name="window" maxlength="30" placeholder="e.g. Summer 2027"></label>
+  </div>
+  <div class="checks">
+    <label class="check"><input type="checkbox" name="remote_only" value="1"> Remote only</label>
+    <label class="check"><input type="checkbox" name="paid_only" value="1"> Paid only (flags unclear ones)</label>
+    <label class="check" title="Embedding similarity only: instant and free, but no reasons"><input type="checkbox" name="quick" value="1"> Quick mode (no LLM, no reasons)</label>
+  </div>
+  <div>
+    <button type="submit" {{ 'disabled' if busy }}>Find my startups</button>
+    {% if busy %}<span class="small muted">A task is running. <a href="/match/task">See it</a>.</span>{% endif %}
+    {% if not llm_on %}<span class="small muted">No GEMINI_API_KEY: only quick mode works.</span>{% endif %}
+  </div>
+</form>
+
+{% if runs %}
+<h2>Past runs</h2>
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>Run</th><th>When</th><th class="num">Shortlist</th><th>Roles</th><th>Interests</th><th>Mode</th><th class="num">LLM calls</th></tr></thead>
+    <tbody>
+      {% for r in runs %}
+      <tr>
+        <td><a href="/match/runs/{{ r.id }}">#{{ r.id }}</a></td>
+        <td class="small">{{ r.created_at | day }}</td>
+        <td class="num">{{ r.prefs.shortlist }}</td>
+        <td class="small">{{ r.prefs.roles | join(', ') }}</td>
+        <td class="small muted">{{ (r.prefs.interests or '–')[:60] }}</td>
+        <td>{% if r.reranked %}<span class="badge good">ranked by LLM</span>{% else %}<span class="badge plain">quick</span>{% endif %}</td>
+        <td class="num">{{ r.llm_calls }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Working…{% endblock %}
+{% block content %}
+<h1 id="heading">{{ 'Working on it…' if busy else 'Task' }}</h1>
+<p class="muted" id="hint">
+  {% if busy %}This page follows the progress and opens the result when it's done. Reading a resume takes
+  about 10 seconds; ranking takes a few minutes (the free LLM allows ~10 calls per minute).{% endif %}
+</p>
+
+{% if task %}
+<div class="card">
+  <div class="task-head">
+    <div>
+      <strong>{{ task.title }}</strong>
+      <span id="task-status" class="badge {{ 'warn' if task.status == 'running' else 'good' if task.status == 'done' else 'bad' }}">{{ task.status }}</span>
+    </div>
+    <form method="post" action="/match/stop" {{ 'hidden' if not busy }}><button class="danger" type="submit">Stop</button></form>
+  </div>
+  <pre class="log" id="task-log">{{ task.log | join('\n') }}</pre>
+  <p id="after" class="small" {{ 'hidden' if busy }}>
+    {% if task.status == 'done' %}<a class="button" href="{{ next }}">See the result →</a>
+    {% else %}It didn't finish. The log above says why. If it says <em>503 / high demand</em>, the free LLM is
+      overloaded: try again in a while; finished work is saved. <a href="/match">Back</a>{% endif %}
+  </p>
+</div>
+{% else %}
+<p class="muted">{% if busy %}The server is busy with an admin task (e.g. a crawl). Try again when it's done.
+  {% else %}Nothing is running.{% endif %} <a href="/match">Back to Match me</a></p>
+{% endif %}
+
+<script>
+  // Same idea as the admin page: ask for the log every 2 s; when the task is done, open the result.
+  if ({{ 'true' if busy else 'false' }}) {
+    const log = document.getElementById("task-log"), badge = document.getElementById("task-status");
+    const timer = setInterval(async () => {
+      try {
+        const data = await (await fetch("/match/task.json")).json();
+        if (!data.task) return;
+        log.textContent = data.task.log.join("\n");
+        log.scrollTop = log.scrollHeight;
+        badge.textContent = data.task.status;
+        if (!data.busy) {
+          clearInterval(timer);
+          if (data.task.status === "done") location.href = {{ next | tojson }};
+          else location.reload();  // shows the "didn't finish" help
+        }
+      } catch (e) { /* server busy or restarting: try again next tick */ }
+    }, 2000);
+    log.scrollTop = log.scrollHeight;
+  }
+</script>
+{% endblock %}

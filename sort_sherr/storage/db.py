@@ -65,6 +65,70 @@ CREATE TABLE IF NOT EXISTS llm_cache (
     jobs_json TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+
+-- ----- Part 2: matching -----
+
+-- pii_json (name, email, phone, links) is personal data: it stays in this local file only.
+CREATE TABLE IF NOT EXISTS candidate_profiles (
+    id INTEGER PRIMARY KEY,
+    resume_hash TEXT NOT NULL UNIQUE,
+    profile_json TEXT NOT NULL,
+    pii_json TEXT NOT NULL,
+    model TEXT,
+    created_at TEXT NOT NULL
+);
+
+-- One row per `match` run, so runs can be compared later.
+CREATE TABLE IF NOT EXISTS match_runs (
+    id INTEGER PRIMARY KEY,
+    candidate_id INTEGER NOT NULL REFERENCES candidate_profiles(id),
+    prefs_json TEXT NOT NULL,
+    filter_stats TEXT NOT NULL DEFAULT '{}',
+    embed_model TEXT,
+    llm_model TEXT,
+    reranked INTEGER NOT NULL DEFAULT 0,
+    llm_calls INTEGER NOT NULL DEFAULT 0,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+-- Every company in a run's retrieval pool (not just the top 15), so eval can compare
+-- "retrieval only" vs "retrieval + rerank" orderings of the same run.
+CREATE TABLE IF NOT EXISTS matches (
+    id INTEGER PRIMARY KEY,
+    run_id INTEGER NOT NULL REFERENCES match_runs(id),
+    candidate_id INTEGER NOT NULL REFERENCES candidate_profiles(id),
+    company_id INTEGER NOT NULL REFERENCES companies(id),
+    job_id INTEGER REFERENCES jobs(id),
+    found_by TEXT,
+    retrieval_score REAL,
+    rerank_score INTEGER,
+    final_score REAL,
+    sub_scores TEXT NOT NULL DEFAULT '{}',
+    why_fit TEXT,
+    why_this_role TEXT,
+    pitch_role TEXT,
+    reasons TEXT NOT NULL DEFAULT '[]',
+    red_flags TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+);
+
+-- Embedding vectors (float32 bytes), keyed by a hash of the text: re-runs only embed what changed.
+CREATE TABLE IF NOT EXISTS embeddings (
+    content_hash TEXT NOT NULL,
+    model TEXT NOT NULL,
+    vector BLOB NOT NULL,
+    PRIMARY KEY (content_hash, model)
+);
+
+-- LLM rerank answers, keyed by hash(profile + preferences + company document + model).
+CREATE TABLE IF NOT EXISTS rerank_cache (
+    cache_key TEXT PRIMARY KEY,
+    result_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 LIST_FIELDS = ("sources", "locations", "tags")
@@ -83,7 +147,22 @@ def connect(path: Path | str) -> sqlite3.Connection:
     if str(path) != ":memory:":
         conn.execute("PRAGMA journal_mode=WAL")  # lets the website read while a crawl writes
     conn.executescript(SCHEMA)
+    add_missing_columns(conn)
     return conn
+
+
+# Columns added after a table was first created. CREATE TABLE IF NOT EXISTS doesn't change an
+# existing table, so older databases get them here. (PRAGMA table_info is SQLite's way to list
+# columns; on Postgres this becomes ALTER TABLE ... ADD COLUMN IF NOT EXISTS.)
+NEW_COLUMNS = [("matches", "pitch_role", "TEXT")]
+
+
+def add_missing_columns(conn) -> None:
+    for table, column, sql_type in NEW_COLUMNS:
+        have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in have:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
+    conn.commit()
 
 
 # ---------- companies ----------
@@ -242,6 +321,175 @@ def cache_put(conn, content_hash: str, jobs: list[JobDraft]) -> None:
         (content_hash, payload, now()),
     )
     conn.commit()
+
+
+# ---------- Part 2: candidates ----------
+
+
+def save_candidate(conn, resume_hash: str, profile_json: str, pii_json: str, model: str) -> int:
+    cur = conn.execute(
+        "INSERT INTO candidate_profiles (resume_hash, profile_json, pii_json, model, created_at) VALUES (?, ?, ?, ?, ?)",
+        (resume_hash, profile_json, pii_json, model, now()),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_candidate_by_hash(conn, resume_hash: str) -> dict | None:
+    row = conn.execute("SELECT * FROM candidate_profiles WHERE resume_hash = ?", (resume_hash,)).fetchone()
+    return dict(row) if row else None
+
+
+def update_candidate_profile(conn, candidate_id: int, profile_json: str) -> None:
+    """Student corrections (e.g. graduation year) after parsing."""
+    conn.execute("UPDATE candidate_profiles SET profile_json = ? WHERE id = ?", (profile_json, candidate_id))
+    conn.commit()
+
+
+def get_candidate(conn, candidate_id: int) -> dict | None:
+    row = conn.execute("SELECT * FROM candidate_profiles WHERE id = ?", (candidate_id,)).fetchone()
+    return dict(row) if row else None
+
+
+# ---------- Part 2: what matching reads ----------
+
+
+def matching_companies(conn) -> list[dict]:
+    """Every company, with its active jobs attached (list of dicts) for building match documents."""
+    companies = []
+    for row in conn.execute("SELECT * FROM companies ORDER BY id"):
+        c = dict(row)
+        for f in LIST_FIELDS:
+            c[f] = json.loads(c[f] or "[]")
+        c["jobs"] = []
+        companies.append(c)
+    by_id = {c["id"]: c for c in companies}
+    for job in conn.execute(
+        "SELECT id, company_id, title, team, location, remote, is_internship, employment_type, requirements, "
+        "description, apply_url FROM jobs WHERE is_active = 1 ORDER BY company_id, is_internship DESC, id"
+    ):
+        if job["company_id"] in by_id:
+            by_id[job["company_id"]]["jobs"].append(dict(job))
+    return companies
+
+
+# ---------- Part 2: embedding + rerank caches ----------
+
+
+def get_embeddings(conn, hashes: list[str], model: str) -> dict[str, bytes]:
+    found = {}
+    for i in range(0, len(hashes), 500):  # chunks: databases limit the number of ? in one query
+        chunk = hashes[i : i + 500]
+        marks = ", ".join("?" for _ in chunk)
+        for r in conn.execute(
+            f"SELECT content_hash, vector FROM embeddings WHERE model = ? AND content_hash IN ({marks})",
+            [model, *chunk],
+        ):
+            found[r["content_hash"]] = r["vector"]
+    return found
+
+
+def put_embeddings(conn, rows: list[tuple[str, bytes]], model: str) -> None:
+    conn.executemany(
+        "INSERT OR REPLACE INTO embeddings (content_hash, model, vector) VALUES (?, ?, ?)",
+        [(h, model, v) for h, v in rows],
+    )
+    conn.commit()
+
+
+def rerank_cache_get(conn, key: str) -> str | None:
+    row = conn.execute("SELECT result_json FROM rerank_cache WHERE cache_key = ?", (key,)).fetchone()
+    return row["result_json"] if row else None
+
+
+def rerank_cache_put(conn, key: str, result_json: str) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO rerank_cache (cache_key, result_json, created_at) VALUES (?, ?, ?)",
+        (key, result_json, now()),
+    )
+    conn.commit()
+
+
+# ---------- Part 2: match runs ----------
+
+
+def save_match_run(conn, candidate_id: int, run: dict, matches: list[dict]) -> int:
+    """run: prefs_json, filter_stats, embed_model, llm_model, reranked, llm_calls, prompt_tokens,
+    output_tokens, cost_usd. matches: one dict per company in the pool."""
+    ts = now()
+    cols = ["candidate_id", *run, "created_at"]
+    cur = conn.execute(
+        f"INSERT INTO match_runs ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})",
+        [candidate_id, *run.values(), ts],
+    )
+    run_id = cur.lastrowid
+    for m in matches:
+        mcols = ["run_id", "candidate_id", *m, "created_at"]
+        conn.execute(
+            f"INSERT INTO matches ({', '.join(mcols)}) VALUES ({', '.join('?' for _ in mcols)})",
+            [run_id, candidate_id, *m.values(), ts],
+        )
+    conn.commit()
+    return run_id
+
+
+def latest_run_id(conn, candidate_id: int, reranked_only: bool = False) -> int | None:
+    sql = "SELECT max(id) FROM match_runs WHERE candidate_id = ?" + (" AND reranked = 1" if reranked_only else "")
+    row = conn.execute(sql, (candidate_id,)).fetchone()
+    return row[0] if row else None
+
+
+def get_run(conn, run_id: int) -> dict | None:
+    row = conn.execute("SELECT * FROM match_runs WHERE id = ?", (run_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def run_matches(conn, run_id: int, order: str = "final") -> list[dict]:
+    """All matches of a run, joined with company name + best job title.
+    order: "final" (reranked ranking) or "retrieval" (embedding similarity only)."""
+    order_sql = {
+        "final": "m.final_score DESC, m.retrieval_score DESC",
+        "retrieval": "m.retrieval_score DESC",
+    }[order]
+    rows = conn.execute(
+        "SELECT m.*, c.name AS company_name, c.website, c.yc_batch, c.careers_url, c.description, c.team_size, "
+        "c.contact, j.title AS job_title, j.apply_url, j.is_internship AS job_is_internship "
+        "FROM matches m JOIN companies c ON c.id = m.company_id LEFT JOIN jobs j ON j.id = m.job_id "
+        f"WHERE m.run_id = ? ORDER BY {order_sql}",
+        (run_id,),
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        for f in ("sub_scores", "reasons", "red_flags"):
+            d[f] = json.loads(d[f])
+        out.append(d)
+    return out
+
+
+def list_candidates(conn) -> list[dict]:
+    """Parsed resumes, newest first (profile only; pii_json is not needed for listing)."""
+    rows = conn.execute(
+        "SELECT p.id, p.profile_json, p.created_at, count(r.id) AS runs FROM candidate_profiles p "
+        "LEFT JOIN match_runs r ON r.candidate_id = p.id GROUP BY p.id, p.profile_json, p.created_at ORDER BY p.id DESC"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def candidate_runs(conn, candidate_id: int) -> list[dict]:
+    rows = conn.execute(
+        "SELECT r.*, count(m.id) AS pool FROM match_runs r LEFT JOIN matches m ON m.run_id = r.id "
+        "WHERE r.candidate_id = ? GROUP BY r.id ORDER BY r.id DESC",
+        (candidate_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def latest_run_for_company(conn, candidate_id: int, company_id: int) -> int | None:
+    row = conn.execute(
+        "SELECT max(run_id) FROM matches WHERE candidate_id = ? AND company_id = ?", (candidate_id, company_id)
+    ).fetchone()
+    return row[0] if row else None
 
 
 # ---------- queries for the web app (read-only) ----------

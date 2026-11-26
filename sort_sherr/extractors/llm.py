@@ -60,7 +60,15 @@ Page URL: {url}
 
 
 class LLMProvider(Protocol):
+    """Anything with these methods can be our LLM (Gemini in real runs, a fake in tests).
+
+    - extract_jobs: Part 1, Tier 3
+    - generate: Part 2 (resume parsing, reranking); returns (answer, token usage)
+    """
+
     async def extract_jobs(self, markdown: str, page_url: str) -> list[LLMJob]: ...
+
+    async def generate(self, prompt: str, schema: type[BaseModel]) -> tuple[BaseModel, dict]: ...
 
 
 class GeminiProvider:
@@ -79,13 +87,15 @@ class GeminiProvider:
         self.lock = asyncio.Lock()
         self.last_call = 0.0
 
-    async def extract_jobs(self, markdown: str, page_url: str) -> list[LLMJob]:
+    async def generate(self, prompt: str, schema: type[BaseModel]) -> tuple[BaseModel, dict]:
+        """Send one prompt; Gemini must answer as JSON in the shape of `schema`.
+        Returns (parsed answer, {"prompt_tokens": .., "output_tokens": ..})."""
         from google.genai import errors, types
 
         request_config = types.GenerateContentConfig(
             response_mime_type="application/json",
-            response_schema=LLMJobList,  # Gemini must answer in exactly this shape
-            temperature=0,  # extraction, not creativity
+            response_schema=schema,  # Gemini must answer in exactly this shape
+            temperature=0,  # extraction/scoring, not creativity
         )
         async with self.lock:  # one LLM call at a time
             for attempt in range(4):
@@ -94,9 +104,7 @@ class GeminiProvider:
                     await asyncio.sleep(wait)
                 try:
                     response = await self.client.aio.models.generate_content(
-                        model=self.model,
-                        contents=PROMPT.format(url=page_url, markdown=markdown),
-                        config=request_config,
+                        model=self.model, contents=prompt, config=request_config
                     )
                     break
                 except errors.APIError as e:
@@ -110,7 +118,16 @@ class GeminiProvider:
 
         parsed = response.parsed
         if parsed is None:  # the SDK couldn't parse it for us -> try the raw text ourselves
-            parsed = LLMJobList.model_validate_json(response.text or "")
+            parsed = schema.model_validate_json(response.text or "")
+        meta = getattr(response, "usage_metadata", None)
+        usage = {
+            "prompt_tokens": getattr(meta, "prompt_token_count", 0) or 0,
+            "output_tokens": getattr(meta, "candidates_token_count", 0) or 0,
+        }
+        return parsed, usage
+
+    async def extract_jobs(self, markdown: str, page_url: str) -> list[LLMJob]:
+        parsed, _ = await self.generate(PROMPT.format(url=page_url, markdown=markdown), LLMJobList)
         return parsed.jobs
 
 

@@ -7,6 +7,7 @@ Pages (all HTML, made on the server with Jinja2 templates in web/templates/):
   /companies         companies, with search + filters
   /companies/{id}    one company: details, why it got its score, all its jobs
   /admin             stats + buttons to run seed / discover / crawl, with live output
+  /match/...         Part 2: upload a resume, get a ranked shortlist (see match_pages.py)
 JSON (used by the admin page's little script):
   /admin/task        the current task's status and log
 """
@@ -234,3 +235,10 @@ async def admin_run(request: Request, action: str = Form(...)):
 async def admin_stop():
     await runner.stop()
     return RedirectResponse("/admin", status_code=303)
+
+
+# ---------- Part 2: resume upload + matching (routes live in match_pages.py) ----------
+
+from . import match_pages  # noqa: E402  (needs the helpers above)
+
+app.include_router(match_pages.setup(templates, get_conn, int_or))  # open: no admin password

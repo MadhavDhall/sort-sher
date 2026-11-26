@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Match me{% endblock %}
+{% block content %}
+<h1>Find startups that fit you</h1>
+<p class="muted">Upload your resume. We read it, suggest roles, and rank startups by how well they fit you,
+with the reason for each, so you know who to email and what to say.</p>
+
+{% if error %}<div class="notice bad-notice">{{ error }}</div>{% endif %}
+{% if not llm_on %}
+<div class="notice">Reading resumes needs a free <code>GEMINI_API_KEY</code> in <code>.env</code> (see README). Already-parsed resumes still work.</div>
+{% endif %}
+
+<form class="card upload" method="post" action="/match/upload" enctype="multipart/form-data">
+  <h3>1 · Upload your resume</h3>
+  <label class="dropzone">
+    <input type="file" name="resume" accept=".pdf,.docx" required>
+    <span>PDF or DOCX, up to 5 MB</span>
+  </label>
+  <p class="small muted">🔒 Your file stays on this computer (<code>uploads/</code>). Before anything is sent to the
+    LLM, your name, email, phone, links and ID numbers are removed. You'll confirm your name on the next step.</p>
+  <button type="submit" {{ 'disabled' if busy }}>Upload</button>
+  {% if busy %}<span class="small muted">A task is running. <a href="/match/task">See it</a>.</span>{% endif %}
+</form>
+
+{% if candidates %}
+<h2>Your parsed resumes</h2>
+<div class="list">
+  {% for c in candidates %}
+  <a class="card candidate-row" href="/match/candidates/{{ c.id }}">
+    <div>
+      <div class="title">{{ c.p.name or 'Candidate #' ~ c.id }}</div>
+      <div class="meta">
+        {% for e in c.p.education[:1] %}{{ e.degree or '' }} {{ e.branch or '' }}{% if e.grad_date %} · graduating {{ e.grad_date }}{% endif %}{% endfor %}
+      </div>
+      <div>{% for f in c.p.focus_areas %}<span class="badge">{{ f }}</span>{% endfor %}</div>
+    </div>
+    <div class="small muted">#{{ c.id }} · {{ c.runs }} run{{ '' if c.runs == 1 else 's' }} · {{ c.created_at | day }}</div>
+  </a>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

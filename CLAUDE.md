@@ -3,8 +3,8 @@
 A tool that helps college students find off-campus internships at **good** startups, preferring
 YC-backed and recently funded ones. The pipeline has four parts:
 
-1. Ingestion (this repo, done): collect startups and their open roles
-2. Resume parsing + matching (embeddings + LLM reranking)
+1. Ingestion (done): collect startups and their open roles
+2. Resume parsing + matching (done, `sort_sherr/matching/`): embeddings + LLM reranking
 3. Personalized email drafting based on company research
 4. Outreach tracker (sent / replied / follow-up dates)
 
@@ -93,6 +93,8 @@ or add abstractions "for later". Prefer plain functions, short modules and a com
 Tests use saved fixtures only, with **no live network**. Every ATS adapter, the JSON-LD extractor,
 the HN parser, the DB rules and Tier 3 have tests. Tier 3 uses a fake `LLMProvider`. When you
 change an extractor, refresh or add a fixture taken from a real response (trimmed).
+Part 2 tests use a made-up resume (`tests/fixtures/resume_fake.pdf/.docx`, rebuilt by
+`make_resume_fixtures.py`) and `companies_fake.json`; never commit a real resume.
 
 ## LLM (Tier 3)
 
@@ -108,6 +110,46 @@ change an extractor, refresh or add a fixture taken from a real response (trimme
   - one call at a time
   - `LLM_MIN_INTERVAL` (6 s) between calls
   - retry on 429 after 30/60/90 s
-- Free-tier data may be used by Google to improve its products. Only send public pages; never
-  send private data such as resumes on the free tier.
+- Free-tier data may be used by Google to improve its products. Only send public pages, and
+  resumes only after local redaction (see Part 2). Never send other private data.
 - Results are cached in the `llm_cache` table, keyed by sha256 of the URL plus the page text.
+- `GeminiProvider.generate(prompt, schema) -> (parsed, usage)` is the generic call (Part 2 uses it);
+  `extract_jobs` is a thin wrapper. Usage = prompt/output tokens from `usage_metadata`.
+- Free models can return 503 "high demand" for long stretches. Don't add paid fallbacks; the
+  caches make re-running cheap. `SORT_SHERR_LLM_MODEL=gemini-3.5-flash` is the other free model.
+
+## Part 2: matching (`sort_sherr/matching/`)
+
+- Flow: `parse-resume` → `match` (hard filters → embeddings top-K → LLM rerank → final score) →
+  `explain` / `eval`. `run.py` wires one run together.
+- **Company-level matching:** most companies have no posting, so match the company and use jobs as
+  extra signal. Filters drop only on KNOWN mismatches; unknown is kept and counted.
+- **Resume privacy (hard rule):** `resume.redact()` removes name, email, phone, URLs and 7+ digit IDs
+  locally before any LLM call; PII is stored only in `candidate_profiles.pii_json`. Templates put
+  the name anywhere, so `find_name()` only guesses and the CLI always has the student confirm the
+  name before sending (`--name` / `--yes` skip the question). With no name, refuse rather than send.
+  Never log/print resume text.
+- Facts the student knows better than the LLM (graduation year) are asked after parsing
+  (`--grad-year`) and saved over the LLM's value; re-running on a cached file costs no LLM call.
+  `uploads/` and `labels/` are gitignored.
+- Preferences (roles, remote, locations, paid, window, free-text **interests**) come from CLI flags,
+  never the resume. Interests add up to `TOP_K_INTERESTS` extra companies (`found_by`).
+- Embeddings: `Embedder` protocol; default local `BAAI/bge-small-en-v1.5` (free, private). Cached
+  in `embeddings` by sha256(text). Plain numpy cosine, no vector DB.
+- Rerank: rubric of 5 sub-scores × 0–20 (stack, domain, interest, seniority, hiring signal), plus
+  `why_fit`, `why_this_role`, evidence pairs (resume item ↔ company fact) and red flags. Ungrounded
+  evidence and invalid `best_job_id` are removed in `clean_result`. Cached in `rerank_cache`.
+- **All tunables live in `match_config.py`** (top-K, batch size, weights, boosts, token prices).
+- Every run is kept (`match_runs` + every pool company in `matches`) so runs can be compared and
+  `eval` can compare retrieval-only vs reranked orderings of the same run.
+- Tests use `FakeEmbedder` (bag of words, in `conftest.py`) and fake LLMs; no model downloads.
+- Shortlist size (`--top`, saved as `Preferences.shortlist`) drives the pool: `match_config.pool_size()`
+  = 1.5 × shortlist, at least `TOP_K_RESUME`, at most `MAX_POOL`. The rerank also returns
+  `pitch_role` (what to ask for in a cold email), since most companies post no fitting role.
+- Website: `web/match_pages.py` (`/match/...`) = upload → confirm name + grad year → profile with
+  suggested roles (`matching/roles.py`, no LLM) → match form → results + CSV. Same rules as admin:
+  read-only queries, writes go through `runner` running the CLI, all form values validated, free
+  text passed as `--opt=value` (never parsed as a flag), uploads saved under a hash name.
+  **Match pages are open (owner's choice: no password)**; only `/admin` uses `require_admin`. So
+  Match has its own `/match/task.json` + `/match/stop` that only see/stop "Parse resume"/"Match"
+  tasks, never admin crawls. Safe only because the server binds to 127.0.0.1.

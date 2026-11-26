@@ -1,7 +1,8 @@
-# How Sort Sherr works (Part 1: ingestion)
+# How Sort Sherr works
 
 This document explains **every part of the code**: what each file does, why it was built that
 way, and how the parts connect. Read it top to bottom once, with the code open beside it.
+Sections 1–9 cover Part 1 (ingestion); [section 10](#10-part-2-resume-parsing--matching) covers Part 2 (matching).
 
 **Contents**
 
@@ -14,6 +15,7 @@ way, and how the parts connect. Read it top to bottom once, with the code open b
 7. [Design decisions and why](#7-design-decisions-and-why)
 8. [How to extend it](#8-how-to-extend-it)
 9. [Try it yourself](#9-try-it-yourself)
+10. [Part 2: resume parsing + matching](#10-part-2-resume-parsing--matching)
 
 ---
 
@@ -701,3 +703,83 @@ pytest tests/test_hn.py -v
 
 A good way to learn the code: pick one test, break the function it tests on purpose (for example,
 remove the `\b` from `INTERN_PATTERN` in `models.py`), run `pytest`, and read which test fails and why.
+
+---
+
+## 10. Part 2: resume parsing + matching
+
+**The question:** "Which ~15 startups should *this* student email, and why?" Most startups never post
+an intern role, so we match the student to the **company** (what it builds, its stack, who it
+hires) and treat job postings as extra evidence.
+
+### Follow one resume through the system
+
+```
+parse-resume uploads/me.pdf
+  resume.extract_text()   PDF/DOCX -> text, plus links hidden behind words like "GitHub"
+  resume.file_hash()      same file parsed before? -> load it from candidate_profiles, done
+  resume.redact()         "Asha Verma / asha_v@... / +91 98..." -> "[NAME] / [EMAIL] / [PHONE]"
+  provider.generate()     Gemini reads the REDACTED text -> ParsedResume (structured JSON)
+  resume.build_profile()  put name + real links back, "ReactJS" -> "React" -> CandidateProfile
+  db.save_candidate()     profile_json + pii_json (local only)
+
+match --candidate 1 --interests "LLM agents, not crypto"
+  db.matching_companies()   every company with its active jobs attached
+  retrieve.hard_filter()    drop only KNOWN mismatches (not hiring, on-site when remote-only, ...)
+  retrieve.retrieve()       embed companies + student, cosine similarity
+                              -> top 75 by resume, + top 25 by interests ("found_by")
+  rerank.rerank()           Gemini scores 5 companies per call on the rubric
+  rerank.clean_result()     drop evidence that doesn't quote the inputs; check best_job_id
+  rank.final_score()        0.85 x LLM + 0.10 x similarity + small boosts
+  db.save_match_run()       one match_runs row + one matches row per pool company
+```
+
+### The files
+
+- **`match_config.py`**: every number you might want to tune. Change a weight here, re-run `match`
+  (the rerank cache makes it free), and compare runs with `eval`.
+- **`matching/models.py`**: the shapes. `ParsedResume` is what the LLM fills in; `CandidateProfile`
+  adds the local-only name and links. `RerankResult` is the LLM's verdict on one company; its
+  `total()` adds the five sub-scores and clamps each to 0–20, in case the LLM writes 25.
+- **`matching/resume.py`**: text extraction, redaction, skill aliases, the parsing prompt.
+  *Why redact instead of a local LLM?* The free Gemini tier may use prompts to improve Google's
+  products. Removing identifiers locally keeps the speed and quality of Gemini without sending
+  who you are. The name is found either as a name-like line matching your email username (college
+  templates often put it mid-page), or as the first line. If neither works, we stop.
+- **`matching/embed.py`**: an *embedding* turns text into ~384 numbers so similar meanings point in
+  similar directions; cosine similarity = how close two directions are. The model runs locally.
+  Vectors are cached by a hash of the text, so the second `match` embeds ~0 documents.
+- **`matching/retrieve.py`**: `company_document()` is what gets embedded (description, tags, job titles,
+  a bit of requirements). `filter_reason()` is one function you can read top to bottom: each rule
+  either drops on a known fact or notes "unknown" and keeps the company.
+- **`matching/rerank.py`**: the rubric prompt. The LLM sees `company_card()` for each company,
+  including job ids so it can name the best role. Answers are cached by a hash of
+  (model + student + preferences + card), so the same inputs never cost a second call.
+- **`matching/rank.py`**: the final formula, in one place. Retrieval similarities cluster close
+  together (e.g. 0.68–0.74), so they're min-max scaled to 0–1 within the run before mixing.
+- **`matching/run.py`**: wires one run together and logs filter counts and token usage.
+- **`matching/evaluate.py`**: precision@K and nDCG@K against your hand labels.
+
+### Reading the eval
+
+Both orderings come from the **same run**, so the only difference is the rerank:
+
+- **precision@15** = (companies you marked *good* in the top 15) / 15
+- **nDCG@15** = how close the order is to the ideal order of your labels (1.0 = perfect)
+
+If "retrieval + rerank" isn't clearly better than "retrieval only", the LLM calls aren't earning
+their cost, and you could rank with `--no-rerank` and only rerank the top few.
+
+### Try it yourself
+
+```bash
+# See what the embedding model and the LLM actually saw for one company
+python -m sort_sherr.cli explain --candidate 1 --company 42
+
+# Compare two runs with different interests
+sqlite3 -header -column data/sort_sherr.db \
+  "SELECT id, prefs_json, llm_calls, prompt_tokens, cost_usd FROM match_runs"
+
+# Break a guard on purpose: remove the `if r.best_job_id not in job_ids` check in
+# rerank.clean_result(), run `pytest tests/test_rerank.py`, and read which test fails.
+```

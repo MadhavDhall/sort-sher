@@ -18,6 +18,8 @@ dependencies = [
 
 [project.optional-dependencies]
 browser = ["playwright>=1.45"]
+# Part 2: resume parsing + matching (sentence-transformers pulls in torch, ~1 GB)
+match = ["pypdf>=5", "python-docx>=1.1", "numpy>=1.26", "sentence-transformers>=3"]
 dev = ["pytest>=8"]
 
 [project.scripts]

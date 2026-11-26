@@ -5,4 +5,7 @@ __pycache__/
 .pytest_cache/
 .env
 data/
+# Part 2: resumes and your own labels are personal data -- never commit them
+uploads/
+labels/
 .DS_Store

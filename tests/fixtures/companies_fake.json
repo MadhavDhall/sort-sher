@@ -1,0 +1,38 @@
+[
+  {
+    "company": {"name": "VectorForge", "domain": "vectorforge.dev", "sources": ["yc"], "yc_batch": "Winter 2026", "is_hiring": true,
+                "team_size": 12, "locations": ["San Francisco, CA, USA"], "tags": ["AI", "Developer Tools"],
+                "description": "Retrieval infrastructure for LLM apps: vector search and RAG pipelines in Python."},
+    "jobs": [
+      {"title": "Software Engineering Intern, Retrieval", "location": "Remote", "remote": true, "requirements": "Python, PyTorch, LangChain, vector databases"},
+      {"title": "Senior Backend Engineer", "location": "San Francisco", "remote": false, "requirements": "Go, Postgres"}
+    ]
+  },
+  {
+    "company": {"name": "ShopStack", "domain": "shopstack.io", "sources": ["yc"], "yc_batch": "Summer 2021", "is_hiring": true,
+                "team_size": 40, "locations": ["Bangalore, India"], "tags": ["E-commerce", "B2B"],
+                "description": "Backend APIs for online stores, built with FastAPI and PostgreSQL."},
+    "jobs": [{"title": "Backend Engineer", "location": "Bangalore", "remote": false, "requirements": "FastAPI, PostgreSQL, Docker"}]
+  },
+  {
+    "company": {"name": "Sales Rocket", "domain": "salesrocket.com", "sources": ["yc"], "yc_batch": "Winter 2025", "is_hiring": true,
+                "team_size": 8, "locations": ["New York, NY, USA"], "tags": ["Sales"],
+                "description": "Outbound sales playbooks for SMB founders."},
+    "jobs": [{"title": "Account Executive", "location": "New York", "remote": false}]
+  },
+  {
+    "company": {"name": "QuietCo", "domain": "quietco.com", "sources": ["yc"], "yc_batch": "Winter 2025", "is_hiring": false,
+                "team_size": 5, "locations": ["London, UK"], "tags": ["Fintech"], "description": "Payroll for freelancers."},
+    "jobs": []
+  },
+  {
+    "company": {"name": "MysteryLabs", "domain": "mysterylabs.ai", "sources": ["yc"], "yc_batch": "Fall 2025", "is_hiring": null,
+                "team_size": 3, "locations": [], "tags": ["AI", "Robotics"], "description": "Robot learning with deep learning and PyTorch."},
+    "jobs": []
+  },
+  {
+    "company": {"name": "ChainPay", "domain": "chainpay.xyz", "sources": ["hn"], "is_hiring": true, "locations": [],
+                "tags": ["Crypto"], "description": "Crypto payments wallet on Ethereum, React frontend."},
+    "jobs": [{"title": "Frontend Engineer (React)", "location": "Remote", "remote": true}]
+  }
+]
