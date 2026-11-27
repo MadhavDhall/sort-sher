@@ -342,15 +342,30 @@ class PgConnection:
     the network); `with conn:` groups several statements into one transaction."""
 
     def __init__(self, url: str, schema: str | None = None):
+        self.url, self.schema, self._tx = url, schema, None
+        self.raw = self._open()
+
+    def _open(self):
         import psycopg
 
-        options = f"-c search_path={schema}" if schema else None  # tests use one schema per database
-        self.raw = psycopg.connect(url, autocommit=True, row_factory=_pg_rows, options=options or "")
-        self._tx = None
+        options = f"-c search_path={self.schema}" if self.schema else ""  # tests use one schema per database
+        # Neon's free tier suspends an idle database and drops idle connections: fail fast instead of
+        # hanging (connect_timeout), and notice dead connections (keepalives).
+        return psycopg.connect(self.url, autocommit=True, row_factory=_pg_rows, options=options,
+                               connect_timeout=20, keepalives=1, keepalives_idle=30, keepalives_interval=10)
 
     def execute(self, sql: str, params=()):
-        cur = self.raw.cursor()
-        cur.execute(_pg_sql(sql, params), _pg_params(params) if params else None)
+        import psycopg
+
+        try:
+            cur = self.raw.cursor()
+            cur.execute(_pg_sql(sql, params), _pg_params(params) if params else None)
+        except psycopg.OperationalError:
+            if self._tx is not None:  # inside `with conn:` a retry could apply half a change twice
+                raise
+            self.raw = self._open()  # the connection was dropped (e.g. Neon woke up): reconnect once
+            cur = self.raw.cursor()
+            cur.execute(_pg_sql(sql, params), _pg_params(params) if params else None)
         return cur
 
     def executemany(self, sql: str, rows):
