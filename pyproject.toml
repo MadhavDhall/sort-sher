@@ -14,6 +14,8 @@ dependencies = [
     "uvicorn[standard]>=0.29",
     "jinja2>=3.1",
     "python-multipart>=0.0.9",
+    # Part 3: MX record check for contact emails (DNS only, never SMTP)
+    "dnspython>=2.6",
 ]
 
 [project.optional-dependencies]
@@ -34,6 +36,8 @@ include = ["sort_sherr*"]
 
 [tool.setuptools.package-data]
 "sort_sherr.web" = ["templates/*.html", "static/*"]
+"sort_sherr.outreach" = ["prompts/*"]
+"sort_sherr.tracker" = ["templates/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

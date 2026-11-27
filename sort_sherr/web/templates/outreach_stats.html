@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Reply rate{% endblock %}
+{% block content %}
+<p class="small"><a href="/match/candidates/{{ cid }}/outreach">← Outreach</a></p>
+<div class="task-head">
+  <div>
+    <h1>What works</h1>
+    <p class="muted" style="margin:0">Reply rate = replies ÷ emails that reached someone (bounces don't count). Every group shows its n.</p>
+  </div>
+  <div>
+    <a class="button secondary" href="/match/candidates/{{ cid }}/outreach/report.html">⬇ HTML report</a>
+    <a class="button secondary" href="/match/candidates/{{ cid }}/outreach/export.csv">⬇ CSV</a>
+  </div>
+</div>
+
+<div class="stats" style="margin:1rem 0">
+  <div class="stat"><div class="n">{{ pct(s.reply_rate) }}</div><div class="k">reply rate ({{ funnel.replied }} of {{ s.delivered }})</div></div>
+  <div class="stat"><div class="n">{{ pct(s.positive_rate) }}</div><div class="k">positive replies</div></div>
+  <div class="stat"><div class="n">{{ pct(s.interview_rate) }}</div><div class="k">interview rate</div></div>
+  <div class="stat"><div class="n">{{ s.median_days_to_reply if s.median_days_to_reply is not none else '-' }}</div><div class="k">median days to reply</div></div>
+</div>
+<p class="small muted">Sent {{ s.sent }} · bounced {{ s.bounced }} · delivered {{ s.delivered }}.</p>
+{% if s.small %}<p class="notice">Only {{ s.delivered }} delivered emails so far. Below {{ small_n }} per group, one reply swings a rate a lot: read these as early signals.</p>{% endif %}
+
+<div class="card">
+  <h3 class="card-h">Funnel</h3>
+  {% set top = s.funnel[0][1] or 1 %}
+  <table>
+    {% for stage, n in s.funnel %}
+    <tr>
+      <td style="width:7rem">{{ stage }}</td><td class="num" style="width:3rem">{{ n }}</td>
+      <td><div class="rate-bar" title="{{ stage }}: {{ n }}"><span style="width: {{ (n / top * 100) | round(1) }}%"></span></div></td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="stats-grid">
+{% for b in s.breakdowns %}
+  <div class="card">
+    <h3 class="card-h">{{ b.title }}</h3>
+    {% if b.groups %}
+    <table>
+      <thead><tr><th>Group</th><th class="num">n</th><th class="num">Replies</th><th class="num">Rate</th><th></th></tr></thead>
+      {% for g in b.groups %}
+      <tr>
+        <td class="small group">{{ g.group | replace('_', '-') }} {% if g.small %}<span class="badge warn" title="Fewer than {{ small_n }}: too few to judge">n&lt;{{ small_n }}</span>{% endif %}</td>
+        <td class="num">{{ g.n }}</td><td class="num">{{ g.replies }}</td><td class="num">{{ pct(g.reply_rate) }}</td>
+        <td style="width:28%"><div class="rate-bar" title="{{ g.replies }} of {{ g.n }} replied"><span style="width: {{ ((g.reply_rate or 0) * 100) | round(1) }}%"></span></div></td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}<p class="muted small">Nothing sent yet.</p>{% endif %}
+    <p class="small muted verdict">{{ b.verdict }}</p>
+  </div>
+{% endfor %}
+</div>
+{% endblock %}

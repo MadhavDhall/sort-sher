@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Outreach report</title>
+<style>
+  /* One file, no internet needed: open it in any browser. Light + dark follow your system setting. */
+  :root {
+    color-scheme: light;
+    --surface: #ffffff; --panel: #f6f6f4; --line: #e3e3e0;
+    --text: #191919; --muted: #666666; --bar: #257de0; --track: #ececea; --warn-bg: #fff4d6; --warn: #7a5300;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface: #191919; --panel: #222221; --line: #353533;
+      --text: #efefef; --muted: #9c9c9c; --bar: #338ced; --track: #2c2c2a; --warn-bg: #3a2f12; --warn: #f2c766;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface: #191919; --panel: #222221; --line: #353533;
+    --text: #efefef; --muted: #9c9c9c; --bar: #338ced; --track: #2c2c2a; --warn-bg: #3a2f12; --warn: #f2c766;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--surface); color: var(--text);
+         font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 920px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  h2 { font-size: 17px; margin: 36px 0 8px; }
+  .muted { color: var(--muted); }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 20px 0; }
+  .tile { background: var(--panel); border-radius: 10px; padding: 14px 16px; }
+  .tile .num { font-size: 28px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .tile .lab { color: var(--muted); font-size: 13px; }
+  .warn { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: 8px 12px; font-size: 14px; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { font-weight: 600; color: var(--muted); font-size: 13px; }
+  td.r, th.r { text-align: right; }
+  td.barcell { width: 40%; min-width: 120px; }
+  svg { display: block; width: 100%; height: 14px; }
+  .track { fill: var(--track); } .fill { fill: var(--bar); }
+  .small { font-size: 12px; color: var(--warn); background: var(--warn-bg); border-radius: 4px; padding: 1px 6px; white-space: nowrap; }
+  .verdict { font-size: 14px; color: var(--muted); margin: 6px 0 0; }
+  .wrap { overflow-x: auto; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Outreach report</h1>
+  <p class="muted">Candidate #{{ cid }} · made {{ made }} · Sort Sherr never sends email: these are the messages you sent yourself.</p>
+
+  <div class="tiles">
+    <div class="tile"><div class="num">{{ pct(s.reply_rate) }}</div><div class="lab">reply rate ({{ replied }} of {{ s.delivered }} delivered)</div></div>
+    <div class="tile"><div class="num">{{ pct(s.positive_rate) }}</div><div class="lab">positive reply rate</div></div>
+    <div class="tile"><div class="num">{{ pct(s.interview_rate) }}</div><div class="lab">interview rate</div></div>
+    <div class="tile"><div class="num">{{ s.median_days_to_reply if s.median_days_to_reply is not none else "-" }}</div><div class="lab">median days to reply</div></div>
+  </div>
+  <p class="muted">Sent {{ s.sent }}, bounced {{ s.bounced }} (bounces don't count: they never reached anyone).</p>
+  {% if s.small %}<p class="warn">Only {{ s.delivered }} delivered emails so far. Below {{ small_n }}, rates swing a lot from one reply: read them as early signals, not results.</p>{% endif %}
+
+  <h2>Funnel</h2>
+  <div class="wrap"><table>
+    <tr><th>Stage</th><th class="r">Count</th><th class="r">of drafted</th><th></th></tr>
+    {% set top = s.funnel[0][1] or 1 %}
+    {% for stage, n in s.funnel %}
+    <tr>
+      <td>{{ stage }}</td><td class="r">{{ n }}</td><td class="r">{{ pct(n / top) if s.funnel[0][1] else "-" }}</td>
+      <td class="barcell"><svg viewBox="0 0 100 14" preserveAspectRatio="none" role="img" aria-label="{{ stage }}: {{ n }}">
+        <title>{{ stage }}: {{ n }}</title>
+        <rect class="track" x="0" y="2" width="100" height="10" rx="2"/>
+        {% if n %}<rect class="fill" x="0" y="2" width="{{ [n / top * 100, 1.5] | max }}" height="10" rx="2"/>{% endif %}
+      </svg></td>
+    </tr>
+    {% endfor %}
+  </table></div>
+
+  {% for b in s.breakdowns %}
+  <h2>{{ b.title }}</h2>
+  <div class="wrap"><table>
+    <tr><th>Group</th><th class="r">n</th><th class="r">Replies</th><th class="r">Reply rate</th><th></th><th></th></tr>
+    {% for g in b.groups %}
+    <tr>
+      <td>{{ g.group | replace("_", "-") }}</td><td class="r">{{ g.n }}</td><td class="r">{{ g.replies }}</td><td class="r">{{ pct(g.reply_rate) }}</td>
+      <td class="barcell"><svg viewBox="0 0 100 14" preserveAspectRatio="none" role="img" aria-label="{{ g.group }}: {{ pct(g.reply_rate) }} of {{ g.n }}">
+        <title>{{ g.group }}: {{ g.replies }} of {{ g.n }} replied ({{ pct(g.reply_rate) }})</title>
+        <rect class="track" x="0" y="2" width="100" height="10" rx="2"/>
+        {% if g.reply_rate %}<rect class="fill" x="0" y="2" width="{{ [g.reply_rate * 100, 1.5] | max }}" height="10" rx="2"/>{% endif %}
+      </svg></td>
+      <td>{% if g.small %}<span class="small">n&lt;{{ small_n }}</span>{% endif %}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="muted">Nothing sent yet.</td></tr>
+    {% endfor %}
+  </table></div>
+  <p class="verdict">{{ b.verdict }}</p>
+  {% endfor %}
+</main>
+</body>
+</html>

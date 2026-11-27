@@ -13,7 +13,10 @@
       {% if prefs.interests %}<br>interests: “{{ prefs.interests[:160] }}”{% endif %}
     </p>
   </div>
-  <a class="button secondary" href="/match/runs/{{ run.id }}/shortlist.csv">⬇ Download CSV</a>
+  <div>
+    <a class="button secondary" href="/match/runs/{{ run.id }}/shortlist.csv">⬇ Download CSV</a>
+    {% if run.reranked %}<a class="button" href="/match/candidates/{{ run.candidate_id }}/drafts">✉ Draft emails</a>{% endif %}
+  </div>
 </div>
 
 {% if not run.reranked %}
@@ -27,6 +30,19 @@
   {% if run.reranked %}LLM: {{ run.llm_calls }} calls, {{ '{:,}'.format(run.prompt_tokens + run.output_tokens) }} tokens ($0 on the free tier).{% endif %}
 </p>
 
+{% if feedback %}
+<details class="card" style="margin-bottom:.8rem">
+  <summary><strong>Your outreach so far:</strong> {{ feedback.replies }} replies from {{ feedback.delivered }} delivered emails
+    <span class="small muted">(shown for you; it doesn't change this ranking)</span></summary>
+  {% for title, groups in feedback.by %}
+  <p class="small" style="margin:.4rem 0">By {{ title }}:
+    {% for g in groups %}<span class="badge plain">{{ g.group }}: {{ '%.0f' | format((g.reply_rate or 0) * 100) }}% (n={{ g.n }})</span>{% endfor %}</p>
+  {% endfor %}
+  {% if feedback.delivered < 10 %}<p class="small muted">Fewer than 10 emails: too few to judge yet.</p>{% endif %}
+  <p class="small"><a href="/match/candidates/{{ run.candidate_id }}/outreach/stats">Full stats →</a></p>
+</details>
+{% endif %}
+
 <div class="list">
   {% for m in rows %}
   <div class="card match">
@@ -37,6 +53,7 @@
         {% if m.yc_batch %}<span class="badge warn">YC {{ m.yc_batch }}</span>{% else %}<span class="badge plain">non-YC</span>{% endif %}
         {% if m.found_by in ('interests', 'both') %}<span class="badge good" title="Found because of what you said you're interested in">matches your interests</span>{% endif %}
         {% if m.team_size %}<span class="small muted">team of {{ m.team_size }}</span>{% endif %}
+        {% if m.company_id in outreach %}<a class="badge plain" href="/match/candidates/{{ run.candidate_id }}/outreach" title="You already have outreach with this company">✉ {{ outreach[m.company_id] }}</a>{% endif %}
       </div>
       <div class="match-score" title="Final score (0-100+)">{{ '%.0f' | format(m.final_score) }}</div>
     </div>

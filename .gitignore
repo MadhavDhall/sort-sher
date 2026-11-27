@@ -8,4 +8,9 @@ data/
 # Part 2: resumes and your own labels are personal data -- never commit them
 uploads/
 labels/
+# Part 3: approved email drafts (contain your name, links and the recipient)
+drafts/
 .DS_Store
+# Part 4: outreach reports and CSV exports (company names, your outcomes)
+reports/
+exports/

@@ -129,6 +129,122 @@ CREATE TABLE IF NOT EXISTS rerank_cache (
     result_json TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+
+-- ----- Part 3: research, contacts, drafts -----
+
+-- One research brief per company. brief_json = facts, each with its source URL; pages_json = the
+-- public pages it was built from (kept so contacts can be re-read without fetching again).
+CREATE TABLE IF NOT EXISTS company_briefs (
+    company_id INTEGER PRIMARY KEY REFERENCES companies(id),
+    brief_json TEXT NOT NULL,
+    pages_json TEXT NOT NULL,
+    model TEXT,
+    fetched_at TEXT NOT NULL
+);
+
+-- Contacts are personal data: they stay in this local, gitignored database.
+CREATE TABLE IF NOT EXISTS contacts (
+    id INTEGER PRIMARY KEY,
+    company_id INTEGER NOT NULL REFERENCES companies(id),
+    type TEXT NOT NULL,
+    value TEXT NOT NULL,
+    person_name TEXT,
+    person_role TEXT,
+    source_type TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    found_at TEXT NOT NULL,
+    confidence TEXT NOT NULL,
+    mx_ok INTEGER,
+    is_guess INTEGER NOT NULL DEFAULT 0,
+    verified INTEGER NOT NULL DEFAULT 0,
+    evidence TEXT,
+    UNIQUE (company_id, type, value)
+);
+
+-- Values removed with `forget-contact`: never stored again, even if a page still lists them.
+CREATE TABLE IF NOT EXISTS forgotten_contacts (
+    value TEXT PRIMARY KEY,
+    forgotten_at TEXT NOT NULL
+);
+
+-- Two variants (A, B) per company. edited_body/chosen/approved_at are filled in by `review`.
+CREATE TABLE IF NOT EXISTS email_drafts (
+    id INTEGER PRIMARY KEY,
+    match_id INTEGER REFERENCES matches(id),
+    candidate_id INTEGER NOT NULL REFERENCES candidate_profiles(id),
+    company_id INTEGER NOT NULL REFERENCES companies(id),
+    variant TEXT NOT NULL,
+    style TEXT,
+    subject TEXT NOT NULL,
+    body TEXT NOT NULL,
+    facts_used TEXT NOT NULL DEFAULT '[]',
+    student_items_used TEXT NOT NULL DEFAULT '[]',
+    check_status TEXT NOT NULL,
+    check_notes TEXT NOT NULL DEFAULT '[]',
+    lint_flags TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    edited_body TEXT,
+    chosen INTEGER NOT NULL DEFAULT 0,
+    approved_at TEXT
+);
+
+-- Companies the student already wrote to: never drafted again. Part 4 (outreach tracker) extends this.
+CREATE TABLE IF NOT EXISTS contacted (
+    candidate_id INTEGER NOT NULL REFERENCES candidate_profiles(id),
+    company_id INTEGER NOT NULL REFERENCES companies(id),
+    contacted_at TEXT NOT NULL,
+    note TEXT,
+    PRIMARY KEY (candidate_id, company_id)
+);
+
+-- Tokens and (paid-tier) cost of each Part 3 command that called the LLM.
+CREATE TABLE IF NOT EXISTS outreach_runs (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL,
+    candidate_id INTEGER,
+    llm_calls INTEGER NOT NULL DEFAULT 0,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+-- ----- Part 4: outreach tracker -----
+
+-- One conversation with one company. `status` is the CURRENT state (updated together with each
+-- event); the full history is in outreach_events. Contact and draft are linked by id, never copied.
+CREATE TABLE IF NOT EXISTS outreach (
+    id INTEGER PRIMARY KEY,
+    candidate_id INTEGER NOT NULL REFERENCES candidate_profiles(id),
+    company_id INTEGER NOT NULL REFERENCES companies(id),
+    draft_id INTEGER REFERENCES email_drafts(id) ON DELETE SET NULL,
+    contact_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL,
+    channel TEXT NOT NULL DEFAULT 'unknown'
+        CHECK (channel IN ('email', 'linkedin', 'x', 'apply_form', 'unknown')),
+    status TEXT NOT NULL DEFAULT 'drafted'
+        CHECK (status IN ('drafted', 'sent', 'replied', 'interview', 'offer', 'rejected', 'ghosted',
+                          'bounced', 'withdrawn')),
+    reply_type TEXT CHECK (reply_type IN ('positive', 'neutral', 'negative')),
+    created_at TEXT NOT NULL,
+    UNIQUE (candidate_id, company_id)
+);
+CREATE INDEX IF NOT EXISTS outreach_by_status ON outreach (candidate_id, status);
+
+-- Every change, with its time: so we can compute "days to reply", "which follow-up got the reply"...
+-- followup_number: 1 or 2 on followup_sent events. scheduled_for: the interview time.
+CREATE TABLE IF NOT EXISTS outreach_events (
+    id INTEGER PRIMARY KEY,
+    outreach_id INTEGER NOT NULL REFERENCES outreach(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL
+        CHECK (kind IN ('drafted', 'sent', 'replied', 'interview', 'offer', 'rejected', 'ghosted',
+                        'bounced', 'withdrawn', 'followup_sent', 'answered')),
+    at TEXT NOT NULL,
+    note TEXT,
+    source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'auto', 'migrated')),
+    followup_number INTEGER,
+    scheduled_for TEXT
+);
+CREATE INDEX IF NOT EXISTS events_by_outreach ON outreach_events (outreach_id, at);
 """
 
 LIST_FIELDS = ("sources", "locations", "tags")
@@ -146,15 +262,23 @@ def connect(path: Path | str) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     if str(path) != ":memory:":
         conn.execute("PRAGMA journal_mode=WAL")  # lets the website read while a crawl writes
+    # SQLite ignores REFERENCES unless this is on (Postgres always enforces them)
+    conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
     add_missing_columns(conn)
+    migrate_contacted(conn)
     return conn
 
 
 # Columns added after a table was first created. CREATE TABLE IF NOT EXISTS doesn't change an
 # existing table, so older databases get them here. (PRAGMA table_info is SQLite's way to list
 # columns; on Postgres this becomes ALTER TABLE ... ADD COLUMN IF NOT EXISTS.)
-NEW_COLUMNS = [("matches", "pitch_role", "TEXT")]
+NEW_COLUMNS = [
+    ("matches", "pitch_role", "TEXT"),
+    # Part 4: a follow-up draft belongs to an outreach thread; 0 = the first email
+    ("email_drafts", "outreach_id", "INTEGER REFERENCES outreach(id) ON DELETE CASCADE"),
+    ("email_drafts", "followup_number", "INTEGER NOT NULL DEFAULT 0"),
+]
 
 
 def add_missing_columns(conn) -> None:
@@ -346,6 +470,12 @@ def update_candidate_profile(conn, candidate_id: int, profile_json: str) -> None
     conn.commit()
 
 
+def update_candidate_pii(conn, candidate_id: int, pii_json: str) -> None:
+    """Part 3: links the student adds for their emails (`draft --github ...`). Stays local, like all PII."""
+    conn.execute("UPDATE candidate_profiles SET pii_json = ? WHERE id = ?", (pii_json, candidate_id))
+    conn.commit()
+
+
 def get_candidate(conn, candidate_id: int) -> dict | None:
     row = conn.execute("SELECT * FROM candidate_profiles WHERE id = ?", (candidate_id,)).fetchone()
     return dict(row) if row else None
@@ -490,6 +620,358 @@ def latest_run_for_company(conn, candidate_id: int, company_id: int) -> int | No
         "SELECT max(run_id) FROM matches WHERE candidate_id = ? AND company_id = ?", (candidate_id, company_id)
     ).fetchone()
     return row[0] if row else None
+
+
+# ---------- Part 3: research briefs ----------
+
+
+def save_brief(conn, company_id: int, brief_json: str, pages_json: str, model: str | None) -> None:
+    conn.execute("DELETE FROM company_briefs WHERE company_id = ?", (company_id,))
+    conn.execute(
+        "INSERT INTO company_briefs (company_id, brief_json, pages_json, model, fetched_at) VALUES (?, ?, ?, ?, ?)",
+        (company_id, brief_json, pages_json, model, now()),
+    )
+    conn.commit()
+
+
+def get_brief(conn, company_id: int) -> dict | None:
+    row = conn.execute("SELECT * FROM company_briefs WHERE company_id = ?", (company_id,)).fetchone()
+    return dict(row) if row else None
+
+
+# ---------- Part 3: contacts ----------
+
+CONTACT_COLUMNS = ("type", "value", "person_name", "person_role", "source_type", "source_url", "confidence",
+                   "mx_ok", "is_guess", "verified", "evidence")
+
+
+def save_contacts(conn, company_id: int, contacts: list[dict]) -> int:
+    """Replace this company's contacts with a fresh list. Skips forgotten values and anything without
+    a source URL. Returns how many were saved."""
+    forgotten = {r[0] for r in conn.execute("SELECT value FROM forgotten_contacts")}
+    # A contact you already wrote to (outreach.contact_id) is kept, so the tracker's link stays valid.
+    in_use = "SELECT contact_id FROM outreach WHERE contact_id IS NOT NULL"
+    kept = {(r[0], r[1]) for r in conn.execute(
+        f"SELECT type, value FROM contacts WHERE company_id = ? AND id IN ({in_use})", (company_id,))}
+    conn.execute(f"DELETE FROM contacts WHERE company_id = ? AND id NOT IN ({in_use})", (company_id,))
+    saved, ts = 0, now()
+    for c in contacts:
+        if not c.get("source_url") or c["value"].lower() in forgotten:
+            continue
+        cols = ["company_id", *CONTACT_COLUMNS, "found_at"]
+        c = {"is_guess": 0, "verified": 0, **{k: v for k, v in c.items() if v is not None}}
+        values = [company_id, *(c.get(k) for k in CONTACT_COLUMNS), ts]
+        cur = conn.execute(
+            f"INSERT INTO contacts ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)}) "
+            "ON CONFLICT (company_id, type, value) DO NOTHING",
+            values,
+        )
+        saved += cur.rowcount or int((c["type"], c["value"]) in kept)
+    conn.commit()
+    return saved
+
+
+def company_contacts(conn, company_id: int) -> list[dict]:
+    rows = conn.execute("SELECT * FROM contacts WHERE company_id = ? ORDER BY id", (company_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def forget_contacts(conn, company_id: int, contact_id: int | None = None) -> int:
+    """Delete one contact (or all of a company's) and remember the values so they're never saved again."""
+    where, params = "company_id = ?", [company_id]
+    if contact_id is not None:
+        where += " AND id = ?"
+        params.append(contact_id)
+    rows = conn.execute(f"SELECT value FROM contacts WHERE {where}", params).fetchall()
+    for r in rows:
+        conn.execute(
+            "INSERT INTO forgotten_contacts (value, forgotten_at) VALUES (?, ?) ON CONFLICT (value) DO NOTHING",
+            (r["value"].lower(), now()),
+        )
+    conn.execute(f"DELETE FROM contacts WHERE {where}", params)
+    conn.commit()
+    return len(rows)
+
+
+# ---------- Part 3: drafts ----------
+
+DRAFT_JSON_FIELDS = ("facts_used", "student_items_used", "check_notes", "lint_flags")
+
+
+def save_draft(conn, draft: dict) -> int:
+    """draft: match_id, candidate_id, company_id, variant, style, subject, body, check_status and the
+    JSON list fields (facts_used, student_items_used, check_notes, lint_flags) as Python lists."""
+    data = {k: (json.dumps(v, ensure_ascii=False) if k in DRAFT_JSON_FIELDS else v) for k, v in draft.items()}
+    cols = [*data, "created_at"]
+    cur = conn.execute(
+        f"INSERT INTO email_drafts ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})", [*data.values(), now()]
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def _draft_row(r) -> dict:
+    d = dict(r)
+    for f in DRAFT_JSON_FIELDS:
+        d[f] = json.loads(d[f] or "[]")
+    return d
+
+
+def candidate_drafts(conn, candidate_id: int) -> list[dict]:
+    """All FIRST-email drafts of a candidate with the company name, oldest company first, A before B.
+    (Part 4 follow-up drafts are separate: see followup_drafts.)"""
+    rows = conn.execute(
+        "SELECT d.*, c.name AS company_name FROM email_drafts d JOIN companies c ON c.id = d.company_id "
+        "WHERE d.candidate_id = ? AND d.followup_number = 0 ORDER BY d.id",
+        (candidate_id,),
+    ).fetchall()
+    return [_draft_row(r) for r in rows]
+
+
+def get_draft(conn, draft_id: int) -> dict | None:
+    row = conn.execute(
+        "SELECT d.*, c.name AS company_name FROM email_drafts d JOIN companies c ON c.id = d.company_id WHERE d.id = ?",
+        (draft_id,),
+    ).fetchone()
+    return _draft_row(row) if row else None
+
+
+def delete_drafts(conn, candidate_id: int, company_id: int) -> None:
+    conn.execute("DELETE FROM email_drafts WHERE candidate_id = ? AND company_id = ? AND followup_number = 0",
+                 (candidate_id, company_id))
+    conn.commit()
+
+
+def companies_drafted_since(conn, candidate_id: int, since_iso: str) -> int:
+    """How many companies got FIRST-email drafts since this time (for the daily cap)."""
+    row = conn.execute(
+        "SELECT count(DISTINCT company_id) FROM email_drafts "
+        "WHERE candidate_id = ? AND created_at >= ? AND followup_number = 0",
+        (candidate_id, since_iso),
+    ).fetchone()
+    return row[0]
+
+
+def followups_drafted_since(conn, candidate_id: int, since_iso: str) -> int:
+    """Follow-up drafts written since this time (they count toward the same daily cap)."""
+    row = conn.execute(
+        "SELECT count(DISTINCT outreach_id) FROM email_drafts "
+        "WHERE candidate_id = ? AND created_at >= ? AND followup_number > 0",
+        (candidate_id, since_iso),
+    ).fetchone()
+    return row[0]
+
+
+def approve_draft(conn, draft_id: int, edited_body: str, subject: str | None = None) -> None:
+    """Mark this variant as the chosen one for its company (and un-choose the other variant).
+    The generated body stays in `body`; your edited version goes to `edited_body`."""
+    d = get_draft(conn, draft_id)
+    conn.execute(  # only the other variants of the SAME message (a follow-up never un-chooses the first email)
+        "UPDATE email_drafts SET chosen = 0 WHERE candidate_id = ? AND company_id = ? AND followup_number = ?",
+        (d["candidate_id"], d["company_id"], d["followup_number"]),
+    )
+    conn.execute(
+        "UPDATE email_drafts SET chosen = 1, edited_body = ?, subject = ?, approved_at = ? WHERE id = ?",
+        (edited_body, subject or d["subject"], now(), draft_id),
+    )
+    conn.commit()
+
+
+# ---------- Part 4: outreach tracker (replaces Part 3's contacted flag) ----------
+
+# The current status an outreach can be in (outreach.status). Events can also be
+# "followup_sent" and "answered", which don't change the status.
+OUTREACH_STATUSES = ("drafted", "sent", "replied", "interview", "offer", "rejected", "ghosted", "bounced", "withdrawn")
+EVENT_KINDS = (*OUTREACH_STATUSES, "followup_sent", "answered")
+OUTREACH_COLUMNS = ("draft_id", "contact_id", "channel", "status", "reply_type")  # what record_event may update
+
+
+def migrate_contacted(conn) -> None:
+    """Part 3's `contacted` rows -> outreach records with one 'sent' event (source 'migrated').
+    Runs on every connect; does nothing once each row has its outreach. The old table is kept."""
+    rows = conn.execute(
+        "SELECT k.* FROM contacted k WHERE NOT EXISTS "
+        "(SELECT 1 FROM outreach o WHERE o.candidate_id = k.candidate_id AND o.company_id = k.company_id)"
+    ).fetchall()
+    for r in rows:
+        cur = conn.execute(
+            "INSERT INTO outreach (candidate_id, company_id, status, created_at) VALUES (?, ?, 'sent', ?)",
+            (r["candidate_id"], r["company_id"], r["contacted_at"]),
+        )
+        conn.execute(
+            "INSERT INTO outreach_events (outreach_id, kind, at, note, source) VALUES (?, 'sent', ?, ?, 'migrated')",
+            (cur.lastrowid, r["contacted_at"], r["note"]),
+        )
+    conn.commit()
+
+
+def find_outreach(conn, candidate_id: int, company_id: int) -> int | None:
+    row = conn.execute(
+        "SELECT id FROM outreach WHERE candidate_id = ? AND company_id = ?", (candidate_id, company_id)
+    ).fetchone()
+    return row[0] if row else None
+
+
+def ensure_outreach(conn, candidate_id: int, company_id: int, draft_id: int | None = None,
+                    contact_id: int | None = None) -> int:
+    """The outreach for this company, created with a 'drafted' event if it doesn't exist yet.
+    While it is still only drafted, a newly approved draft / contact replaces the old link."""
+    oid = find_outreach(conn, candidate_id, company_id)
+    if oid is None:
+        ts = now()
+        oid = conn.execute(
+            "INSERT INTO outreach (candidate_id, company_id, draft_id, contact_id, created_at) VALUES (?, ?, ?, ?, ?)",
+            (candidate_id, company_id, draft_id, contact_id, ts),
+        ).lastrowid
+        conn.execute("INSERT INTO outreach_events (outreach_id, kind, at) VALUES (?, 'drafted', ?)", (oid, ts))
+    else:
+        conn.execute(
+            "UPDATE outreach SET draft_id = coalesce(?, draft_id), contact_id = coalesce(?, contact_id) "
+            "WHERE id = ? AND status = 'drafted'",
+            (draft_id, contact_id, oid),
+        )
+    conn.commit()
+    return oid
+
+
+def record_event(conn, outreach_id: int, kind: str, at: str, *, note: str | None = None, source: str = "manual",
+                 followup_number: int | None = None, scheduled_for: str | None = None, **updates) -> int:
+    """Add one event AND update the outreach's current fields (status, channel...) in one transaction.
+    updates: any of OUTREACH_COLUMNS, e.g. status="replied", reply_type="positive"."""
+    bad = set(updates) - set(OUTREACH_COLUMNS)
+    if bad:
+        raise ValueError(f"can't update {bad}")
+    with conn:  # commits both statements together, or neither
+        event_id = conn.execute(
+            "INSERT INTO outreach_events (outreach_id, kind, at, note, source, followup_number, scheduled_for) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (outreach_id, kind, at, note, source, followup_number, scheduled_for),
+        ).lastrowid
+        if updates:
+            sets = ", ".join(f"{k} = ?" for k in updates)
+            conn.execute(f"UPDATE outreach SET {sets} WHERE id = ?", [*updates.values(), outreach_id])
+    return event_id
+
+
+# One outreach with what the pages and metrics need: company, draft style, contact, match score.
+OUTREACH_SELECT = (
+    "SELECT o.*, c.name AS company_name, c.yc_batch, c.team_size, "
+    "d.subject AS draft_subject, d.style AS draft_style, d.variant AS draft_variant, "
+    "k.type AS contact_type, k.value AS contact_value, k.person_name AS contact_person, "
+    "k.person_role AS contact_role, k.source_type AS contact_source, k.source_url AS contact_source_url, "
+    "m.final_score AS match_score "
+    "FROM outreach o JOIN companies c ON c.id = o.company_id "
+    "LEFT JOIN email_drafts d ON d.id = o.draft_id "
+    "LEFT JOIN contacts k ON k.id = o.contact_id "
+    "LEFT JOIN matches m ON m.id = d.match_id "
+)
+
+
+def get_outreach(conn, outreach_id: int) -> dict | None:
+    row = conn.execute(OUTREACH_SELECT + "WHERE o.id = ?", (outreach_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def candidate_outreach(conn, candidate_id: int) -> list[dict]:
+    rows = conn.execute(OUTREACH_SELECT + "WHERE o.candidate_id = ? ORDER BY o.id", (candidate_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def outreach_events(conn, outreach_id: int) -> list[dict]:
+    """In the order they were logged (a send you log with an earlier --at still comes after 'drafted')."""
+    rows = conn.execute(
+        "SELECT * FROM outreach_events WHERE outreach_id = ? ORDER BY id", (outreach_id,)
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def candidate_events(conn, candidate_id: int) -> dict[int, list[dict]]:
+    """Every event of a candidate's outreach, grouped by outreach id (one query, for due/metrics)."""
+    rows = conn.execute(
+        "SELECT e.* FROM outreach_events e JOIN outreach o ON o.id = e.outreach_id "
+        "WHERE o.candidate_id = ? ORDER BY e.id",
+        (candidate_id,),
+    ).fetchall()
+    out: dict[int, list[dict]] = {}
+    for r in rows:
+        out.setdefault(r["outreach_id"], []).append(dict(r))
+    return out
+
+
+def followup_drafts(conn, outreach_id: int) -> list[dict]:
+    rows = conn.execute(
+        "SELECT d.*, c.name AS company_name FROM email_drafts d JOIN companies c ON c.id = d.company_id "
+        "WHERE d.outreach_id = ? AND d.followup_number > 0 ORDER BY d.id",
+        (outreach_id,),
+    ).fetchall()
+    return [_draft_row(r) for r in rows]
+
+
+def delete_followup_drafts(conn, outreach_id: int, number: int) -> None:
+    conn.execute("DELETE FROM email_drafts WHERE outreach_id = ? AND followup_number = ?", (outreach_id, number))
+    conn.commit()
+
+
+def mark_contacted(conn, candidate_id: int, company_id: int, note: str | None = None) -> None:
+    """Part 3's "I already wrote to them" (channel and date unknown): an outreach with a 'sent' event."""
+    oid = ensure_outreach(conn, candidate_id, company_id)
+    if not conn.execute("SELECT 1 FROM outreach_events WHERE outreach_id = ? AND kind = 'sent'", (oid,)).fetchone():
+        record_event(conn, oid, "sent", now(), note=note, status="sent")
+
+
+def contacted_company_ids(conn, candidate_id: int) -> set[int]:
+    """Companies you already wrote to (Part 3 never drafts for them again)."""
+    rows = conn.execute(
+        "SELECT o.company_id FROM outreach o WHERE o.candidate_id = ? AND EXISTS "
+        "(SELECT 1 FROM outreach_events e WHERE e.outreach_id = o.id AND e.kind = 'sent')",
+        (candidate_id,),
+    )
+    return {r[0] for r in rows}
+
+
+def outreach_status_by_company(conn, candidate_id: int) -> dict[int, str]:
+    """company_id -> current outreach status (for badges on the match results)."""
+    rows = conn.execute("SELECT company_id, status FROM outreach WHERE candidate_id = ?", (candidate_id,))
+    return {r[0]: r[1] for r in rows}
+
+
+def forget_company_data(conn, company_id: int) -> dict:
+    """Delete all PERSONAL data about one company: outreach (+ events and follow-up drafts, by cascade),
+    drafts, contacts (remembered as forgotten) and Part 3's contacted rows. Public data (the company,
+    its jobs, matches, research brief) stays. Returns counts."""
+    counts = {"outreach": conn.execute("SELECT count(*) FROM outreach WHERE company_id = ?", (company_id,)).fetchone()[0]}
+    conn.execute("DELETE FROM outreach WHERE company_id = ?", (company_id,))
+    counts["drafts"] = conn.execute("DELETE FROM email_drafts WHERE company_id = ?", (company_id,)).rowcount
+    conn.execute("DELETE FROM contacted WHERE company_id = ?", (company_id,))
+    conn.commit()
+    counts["contacts"] = forget_contacts(conn, company_id)
+    return counts
+
+
+def forget_contact_value(conn, value: str) -> int:
+    """Forget one email/handle/URL everywhere: delete it from every company and never save it again.
+    Outreach that used it keeps its history, with contact_id set to NULL by the foreign key."""
+    value = value.strip().lower()
+    rows = conn.execute("SELECT id, company_id FROM contacts WHERE lower(value) = ?", (value,)).fetchall()
+    for r in rows:
+        forget_contacts(conn, r["company_id"], r["id"])
+    conn.execute(
+        "INSERT INTO forgotten_contacts (value, forgotten_at) VALUES (?, ?) ON CONFLICT (value) DO NOTHING", (value, now())
+    )
+    conn.commit()
+    return len(rows)
+
+
+# ---------- Part 3: token log ----------
+
+
+def log_outreach_run(conn, kind: str, candidate_id: int | None, usage: dict, cost_usd: float) -> None:
+    conn.execute(
+        "INSERT INTO outreach_runs (kind, candidate_id, llm_calls, prompt_tokens, output_tokens, cost_usd, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (kind, candidate_id, usage["llm_calls"], usage["prompt_tokens"], usage["output_tokens"], cost_usd, now()),
+    )
+    conn.commit()
 
 
 # ---------- queries for the web app (read-only) ----------

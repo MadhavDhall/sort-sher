@@ -1,0 +1,42 @@
+# One phrase per line, matched case-insensitively. Lines starting with # are ignored.
+# Generic openers and flattery
+i hope this email finds you well
+i hope this finds you well
+i hope you are doing well
+i am writing to
+i'm writing to
+to whom it may concern
+dear sir
+dear hiring manager
+i love your mission
+i am a huge fan
+i'm a huge fan
+big fan of
+your amazing
+amazing work
+truly inspiring
+# Buzzwords
+synergy
+leverage my
+passionate about
+cutting-edge
+cutting edge
+innovative
+game-changer
+game changer
+revolutionize
+revolutionary
+world-class
+disruptive
+rockstar
+ninja
+fast-paced environment
+# Pushy or templated asks
+i would be a great fit
+i am the perfect candidate
+please find attached
+looking forward to hearing from you soon
+at your earliest convenience
+kindly
+# Leftovers
+(no links)

@@ -1,0 +1,23 @@
+{
+ "hits": [
+  {
+   "objectID": "49580207",
+   "title": "AfterQuery becomes Y Combinator's fastest-ever unicorn, now valued at $3.2B",
+   "url": "https://techcrunch.com/2026/09/01/afterquery-reportedly-becomes-y-combinators-fastest-ever-unicorn-now-valued-at-3-2b/",
+   "created_at": "2026-09-05T20:08:39Z",
+   "points": 2,
+   "story_text": null,
+   "author": "andsoitis"
+  },
+  {
+   "objectID": "4939674",
+   "title": "Programming inside the URL string",
+   "url": "http://apenwarr.ca/log/?m=201212#18",
+   "created_at": "2012-12-18T21:23:42Z",
+   "points": 6,
+   "story_text": "About http://afterquery.appspot.com/, a pure-client-side javascript tool that downloads jsonp-formatted data from a given URL, applies a configurable series of transformations, and then renders the result as either a data table or a Google Visualizations (gviz) chart.",
+   "author": "emmelaich"
+  }
+ ],
+ "nbHits": 2
+}

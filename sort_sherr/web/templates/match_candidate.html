@@ -3,6 +3,8 @@
 {% block content %}
 <p class="small"><a href="/match">← All resumes</a></p>
 <h1>{{ p.name or 'Candidate #' ~ cid }}</h1>
+{% if runs | selectattr('reranked') | list %}<p><a class="button secondary" href="/match/candidates/{{ cid }}/drafts">✉ Email drafts for my top matches →</a>
+  <a class="button secondary" href="/match/candidates/{{ cid }}/outreach">📬 Outreach tracker →</a></p>{% endif %}
 <p class="muted">
   {% for e in p.education[:1] %}{{ e.degree or '' }} {{ e.branch or '' }}{% if e.college %}, {{ e.college }}{% endif %}{% if e.grad_date %} · graduating {{ e.grad_date }}{% endif %}{% endfor %}
 </p>

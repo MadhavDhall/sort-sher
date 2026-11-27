@@ -41,6 +41,13 @@ BLOCKED_DOMAINS = {
     "indeed.com",
     "glassdoor.com",
     "crunchbase.com",
+    # Part 3 (contacts): people-data brokers, and X/Twitter. We may LINK to a public X or LinkedIn
+    # profile found on another page, but we never fetch these sites.
+    "apollo.io",
+    "rocketreach.co",
+    "zoominfo.com",
+    "x.com",
+    "twitter.com",
 }
 
 # Web app: if set, the /admin pages ask for this password (any username). Unset = admin is open,
@@ -51,3 +58,7 @@ ADMIN_PASSWORD = os.getenv("SORT_SHERR_ADMIN_PASSWORD") or None
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 LLM_MODEL = os.getenv("SORT_SHERR_LLM_MODEL", "gemini-3.5-flash-lite")  # free, fast, good at extraction
 LLM_MIN_INTERVAL = float(os.getenv("SORT_SHERR_LLM_MIN_INTERVAL", "6"))  # seconds between calls (~10/min)
+
+# Part 3 (contacts): optional email-finder API. Hunter.io's free plan needs no credit card.
+# Unset = we only use public pages and the GitHub API.
+HUNTER_API_KEY = os.getenv("HUNTER_API_KEY") or None

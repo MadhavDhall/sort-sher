@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}{{ name }} · draft{% endblock %}
+{% block content %}
+<p class="small"><a href="/match/candidates/{{ cid }}/drafts">← All drafts</a></p>
+<h1>{{ name }}</h1>
+
+{% if message %}<p class="notice">{{ message }}</p>{% endif %}
+{% if lint_out %}<p class="notice bad-notice">Lint on your edited version: {{ lint_out }}</p>{% endif %}
+
+<!-- ---------- who to send it to ---------- -->
+<div class="card">
+  <h3 class="card-h">Who to send it to</h3>
+  {% if best %}
+  <p><strong>Suggested:</strong> {{ best.value }}
+    {% if best.person_name %}({{ best.person_name }}{% if best.person_role %}, {{ best.person_role }}{% endif %}){% endif %}
+    · <a href="{{ best.source_url }}" target="_blank" rel="noopener noreferrer">found here ↗</a>
+    <span class="small muted">Open that link and check it before you send.</span></p>
+  {% else %}
+  <p class="muted">No contact found. Look on their website or YC page.</p>
+  {% endif %}
+  <details>
+    <summary class="small">All {{ contacts | length }} contacts, best first</summary>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Contact</th><th>Who</th><th>Kind</th><th>Found at</th><th></th></tr></thead>
+        <tbody>
+        {% for c in contacts %}
+          <tr>
+            <td class="small">{% if c.is_guess %}<span class="badge warn">UNVERIFIED GUESS</span> {% endif %}{{ c.type }}: {{ c.value }}
+              {% if c.type == 'email' %}<div class="muted">{{ {1: 'mail server ok', 0: 'NO mail server', None: 'mail server not checked'}[c.mx_ok] }}</div>{% endif %}
+              {% if c.evidence %}<div class="muted">{{ c.evidence }}</div>{% endif %}</td>
+            <td class="small">{{ c.person_name or 'company' }}{% if c.person_role %}<div class="muted">{{ c.person_role }}</div>{% endif %}</td>
+            <td class="small">{{ c.level_label }}<div class="muted">{{ c.source_type | replace('_', '-') }}, {{ c.confidence }}</div></td>
+            <td class="small"><a href="{{ c.source_url }}" target="_blank" rel="noopener noreferrer">{{ c.source_url[:50] }}{{ '…' if c.source_url | length > 50 }}</a></td>
+            <td><form method="post" action="/match/candidates/{{ cid }}/drafts/{{ company_id }}/forget">
+              <input type="hidden" name="contact_id" value="{{ c.id }}">
+              <button class="small-button" type="submit" title="Delete it and never save it again">Forget</button></form></td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </details>
+</div>
+
+<!-- ---------- the two variants ---------- -->
+<div class="two-col">
+{% for d in drafts %}
+  <form class="card draft" method="post" action="/match/candidates/{{ cid }}/drafts/{{ company_id }}/approve">
+    <div class="task-head">
+      <h3 class="card-h">Variant {{ d.variant }} <span class="small muted">{{ d.style }}</span></h3>
+      <div>
+        {% if d.chosen %}<span class="badge good">approved</span>{% endif %}
+        <span class="badge {{ 'good' if d.check_status == 'ok' else 'warn' }}">check: {{ d.check_status }}</span>
+      </div>
+    </div>
+    <input type="hidden" name="draft_id" value="{{ d.id }}">
+    <label class="field"><span>Subject</span>
+      <input type="text" name="subject" maxlength="200" required value="{{ d.subject }}"></label>
+    <label class="field"><span>Body <small class="muted">(edit freely)</small></span>
+      <textarea name="body" rows="16" maxlength="5000" required id="body-{{ d.id }}">{{ d.edited_body or d.body }}</textarea></label>
+
+    {% for note in d.check_notes %}<p class="small notice bad-notice">Check: {{ note }}</p>{% endfor %}
+    {% for flag in d.lint_flags %}<p class="small notice bad-notice">Lint: {{ flag }}</p>{% endfor %}
+
+    <details open>
+      <summary class="small">Facts this draft uses ({{ d.facts_used | length }})</summary>
+      <ul class="tight small">
+      {% for f in d.facts_used %}
+        <li><strong>{{ f.id }}</strong> {{ f.text }}{% if f.date %} <span class="muted">({{ f.date }})</span>{% endif %}
+          · <a href="{{ f.source_url }}" target="_blank" rel="noopener noreferrer">source ↗</a></li>
+      {% else %}<li class="muted">none</li>{% endfor %}
+      </ul>
+    </details>
+    <details>
+      <summary class="small">From your resume ({{ d.student_items_used | length }})</summary>
+      <ul class="tight small">{% for i in d.student_items_used %}<li><strong>{{ i.id }}</strong> {{ i.text }}</li>{% endfor %}</ul>
+    </details>
+
+    <div class="actions">
+      <button type="submit">{{ 'Save my edits' if d.chosen else 'Approve this one' }}</button>
+      <button type="button" class="secondary copy" data-target="body-{{ d.id }}">Copy</button>
+      {% if d.chosen %}<a class="button secondary" href="/match/candidates/{{ cid }}/drafts/{{ company_id }}/email.txt">Download .txt</a>{% endif %}
+    </div>
+  </form>
+{% endfor %}
+</div>
+
+<div class="card">
+  {% if contacted %}
+  <p><span class="badge plain">{{ outreach.status if outreach else 'contacted' }}</span> You already wrote to this company: it will never be drafted again.
+    {% if outreach %}<a href="/match/candidates/{{ cid }}/outreach/{{ outreach.id }}">Track it (replies, follow-ups) →</a>{% endif %}</p>
+  {% elif drafts | selectattr('chosen') | list %}
+  <form method="post" action="/match/candidates/{{ cid }}/drafts/{{ company_id }}/sent">
+    <h3 class="card-h">Sent it?</h3>
+    <p class="small muted">After you send the approved email from your own inbox, log it here. That starts the follow-up clock
+      (first follow-up after 5 business days without a reply).</p>
+    <div class="row-fields">
+      <label class="field"><span>Channel</span>
+        <select name="channel">{% for ch in channels %}<option value="{{ ch }}" {{ 'selected' if best and ((best.type == 'email' and ch == 'email') or (best.type == ch)) }}>{{ ch | replace('_', ' ') }}</option>{% endfor %}</select></label>
+      <label class="field"><span>Sent on</span><input type="date" name="at" max="{{ today }}" value="{{ today }}"></label>
+    </div>
+    <div class="actions"><button type="submit">I sent it</button></div>
+  </form>
+  {% else %}
+  <form method="post" action="/match/candidates/{{ cid }}/drafts/{{ company_id }}/contacted">
+    <p class="small muted">Approve a variant above, send it yourself, then log it here. Already wrote to them another way?
+      Mark it, so Sort Sherr never drafts for this company again.</p>
+    <button type="submit" class="secondary">I've contacted them</button>
+  </form>
+  {% endif %}
+</div>
+
+<script>
+  // "Copy" puts "Subject: ...\n\n<body>" on the clipboard, using the text currently in the box (your edits).
+  document.querySelectorAll("button.copy").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const body = document.getElementById(btn.dataset.target).value;
+      const subject = btn.closest("form").querySelector("input[name=subject]").value;
+      try {
+        await navigator.clipboard.writeText(`Subject: ${subject}\n\n${body}`);
+        btn.textContent = "Copied ✓";
+      } catch (e) { btn.textContent = "Copy failed: select the text instead"; }
+      setTimeout(() => (btn.textContent = "Copy"), 2000);
+    });
+  });
+</script>
+{% endblock %}

@@ -167,7 +167,7 @@ pre.log {
 .dropzone span { color: var(--muted); font-size: .85rem; }
 .field { display: flex; flex-direction: column; gap: .3rem; }
 .field > span { font-weight: 600; font-size: .92rem; }
-input[type=text], textarea, .field input[type=number] {
+input[type=text], input[type=url], textarea, .field input[type=number] {
   background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: .45rem .6rem; font: inherit; width: 100%;
 }
 .field select { max-width: 26rem; }
@@ -211,3 +211,28 @@ ul.tight li { margin: .15rem 0; }
   .kv { grid-template-columns: 1fr; }
   .role-line .button { margin-left: 0; }
 }
+
+/* ---------- Part 3: email drafts ---------- */
+.draft { display: flex; flex-direction: column; gap: .6rem; }
+.draft textarea { font-size: .92rem; line-height: 1.45; white-space: pre-wrap; }
+.actions { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: .4rem; }
+.small-button { padding: .2rem .55rem; font-size: .8rem; }
+
+/* ---------- Part 4: outreach tracker ---------- */
+.good-notice { background: var(--good-soft); color: var(--good); }
+form.stack { display: grid; gap: .6rem; }
+ol.due-list { margin: 0; padding-left: 1.3rem; }
+ol.due-list li { margin: .45rem 0; }
+ol.timeline { list-style: none; margin: 0; padding: 0 0 0 1rem; border-left: 2px solid var(--line); }
+ol.timeline li { position: relative; margin: 0 0 .8rem; }
+ol.timeline li::before { content: ""; position: absolute; left: -1.38rem; top: .45rem; width: .6rem; height: .6rem;
+                         border-radius: 50%; background: var(--accent); }
+ol.timeline .when { display: inline-block; min-width: 6.2rem; }
+.rate-bar { height: .65rem; background: var(--bg); border: 1px solid var(--line); border-radius: 99px; overflow: hidden; min-width: 80px; }
+.rate-bar > span { display: block; height: 100%; background: var(--accent); border-radius: 99px; }
+.verdict { margin: .4rem 0 0; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+form.card.draft + form.card, form.card + form.card { margin-top: .8rem; }
+.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: .8rem; margin-top: .8rem; }
+.stats-grid table { width: 100%; table-layout: auto; }
+td.group { white-space: nowrap; }

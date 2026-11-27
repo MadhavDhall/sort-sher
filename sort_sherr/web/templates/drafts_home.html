@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}Email drafts{% endblock %}
+{% block content %}
+<p class="small"><a href="/match/candidates/{{ cid }}">← {{ p.name or 'Candidate #' ~ cid }}</a></p>
+<div class="task-head"><h1>Email drafts</h1>
+  <a class="button secondary" href="/match/candidates/{{ cid }}/outreach">📬 Outreach tracker →</a></div>
+<p class="muted">For your top matches, Sort Sherr reads each company's public pages, finds who to write to
+  (with the page it found them on) and writes <strong>two short drafts</strong>. You pick one, edit it and
+  <strong>send it yourself</strong>: nothing is ever sent from here.</p>
+
+{% if error %}<p class="notice bad-notice">{{ error }}</p>{% endif %}
+
+{% if not run %}
+<div class="card"><p>You need a match run ranked by the LLM first. <a href="/match/candidates/{{ cid }}">Run one</a> (not quick mode).</p></div>
+{% else %}
+<div class="two-col">
+  <form class="card match-form" method="post" action="/match/candidates/{{ cid }}/drafts/run">
+    <h3 class="card-h">Draft for my top matches</h3>
+    <p class="small muted">From run <a href="/match/runs/{{ run.id }}">#{{ run.id }}</a>.
+      Today: <strong>{{ left }} of {{ cap }}</strong> companies left (a daily cap, so this never turns into spam).</p>
+    <div class="row-fields">
+      <label class="field"><span>How many top matches</span>
+        <select name="top">{% for n in top_choices %}<option value="{{ n }}" {{ 'selected' if n == 5 }}>{{ n }}</option>{% endfor %}</select>
+        <small class="muted">Counted from #1; already-drafted ones are skipped (pick 10 to draft #6-10). ~3-5 LLM calls each.</small>
+      </label>
+      <label class="field"><span>Work setup to ask for</span>
+        <select name="setup">{% for key, text in setups.items() %}
+          <option value="{{ key }}" {{ 'selected' if (prefs and prefs.remote_only and key == 'remote') or (not (prefs and prefs.remote_only) and key == 'either') }}>{{ text }}</option>{% endfor %}
+        </select>
+      </label>
+    </div>
+    <label class="field"><span>When can you intern?</span>
+      <input type="text" name="window" maxlength="120" required value="{{ prefs.window if prefs and prefs.window else '' }}"
+             placeholder="e.g. can start now (remote); onsite mid-May to mid-July 2027">
+    </label>
+    <details {{ 'open' if not (links.github or links.linkedin) }}>
+      <summary class="small">Links for your signature {% if links.github or links.linkedin %}(saved: {{ 'GitHub ' if links.github }}{{ 'LinkedIn' if links.linkedin }}){% else %}(none saved yet){% endif %}</summary>
+      <p class="small muted">Saved on this computer only; the LLM never sees them (it writes [GITHUB] and they're filled in here).</p>
+      <div class="row-fields">
+        <label class="field"><span>GitHub</span><input type="url" name="github" maxlength="200" placeholder="https://github.com/you"></label>
+        <label class="field"><span>LinkedIn</span><input type="url" name="linkedin" maxlength="200" placeholder="https://linkedin.com/in/you"></label>
+      </div>
+      <label class="field"><span>Portfolio / resume link</span><input type="url" name="portfolio" maxlength="200" placeholder="https://you.dev"></label>
+    </details>
+    <div class="checks"><label class="check"><input type="checkbox" name="redo" value="1"> Redraft companies that already have drafts</label></div>
+    <div>
+      <button type="submit" {{ 'disabled' if busy or not llm_on or left == 0 }}>Research &amp; draft</button>
+      {% if busy %}<span class="small muted">A task is running. <a href="/match/task">See it</a>.</span>{% endif %}
+      {% if not llm_on %}<span class="small muted">Needs a GEMINI_API_KEY in .env.</span>{% endif %}
+      {% if left == 0 %}<span class="small muted">Daily cap reached. Come back tomorrow.</span>{% endif %}
+    </div>
+  </form>
+
+  <div class="card">
+    <h3 class="card-h">Your top matches</h3>
+    <table>
+      <tbody>
+      {% for m in top %}
+        <tr>
+          <td class="num small muted">{{ loop.index }}</td>
+          <td>{% if m.state == 'drafted' %}<a href="/match/candidates/{{ cid }}/drafts/{{ m.id }}">{{ m.name }}</a>{% else %}{{ m.name }}{% endif %}
+            <div class="small muted">{{ m.role or '' }}</div></td>
+          <td>{% if m.state == 'contacted' %}<span class="badge plain">contacted</span>
+              {% elif m.state == 'drafted' %}<span class="badge good">drafted</span>{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{% if drafted %}
+<h2>Drafted companies</h2>
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>Company</th><th>Checks</th><th>Status</th><th>Drafted</th></tr></thead>
+    <tbody>
+    {% for c in drafted %}
+      <tr>
+        <td><a href="/match/candidates/{{ cid }}/drafts/{{ c.company_id }}">{{ c.name }}</a></td>
+        <td>{% for v, s in c.checks %}<span class="badge {{ 'good' if s == 'ok' else 'warn' }}" title="{{ s }}">{{ v }}: {{ 'ok' if s == 'ok' else 'review' }}</span> {% endfor %}</td>
+        <td>{% if c.company_id in contacted %}<span class="badge plain">contacted</span>
+            {% elif c.approved %}<span class="badge good">approved ({{ c.approved }})</span>
+            {% else %}<span class="muted small">to review</span>{% endif %}</td>
+        <td class="small">{{ c.created_at | day }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}

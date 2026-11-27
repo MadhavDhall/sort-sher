@@ -43,7 +43,7 @@ SECONDS_PER_LLM_CALL = 8  # rough: 6 s free-tier spacing + answer time
 router = APIRouter()
 
 
-MATCH_TASKS = ("Parse resume", "Match")  # the only runner tasks these open pages may see or stop
+MATCH_TASKS = ("Parse resume", "Match", "Draft emails", "Draft follow-up")  # the only runner tasks these open pages may see or stop
 
 
 def setup(templates, get_conn, int_or):
@@ -174,9 +174,13 @@ def setup(templates, get_conn, int_or):
     def run_page(request: Request, run_id: int, conn=Depends(get_conn)):
         n = int_or(request.query_params.get("n"), None, 1, match_config.MAX_POOL + 100)
         run, prefs, everything, rows = run_rows(conn, run_id, n)
+        from ..tracker.metrics import feedback
+
         return render(
             request, "match_run.html", run=run, prefs=prefs, rows=rows, pool=len(everything),
             filter_stats=json.loads(run["filter_stats"]),
+            outreach=db.outreach_status_by_company(conn, run["candidate_id"]),  # Part 4 feedback
+            feedback=feedback(conn, run["candidate_id"]),
         )
 
     @router.get("/match/runs/{run_id}/shortlist.csv")

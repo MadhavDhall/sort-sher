@@ -5,8 +5,8 @@ YC-backed and recently funded ones. The pipeline has four parts:
 
 1. Ingestion (done): collect startups and their open roles
 2. Resume parsing + matching (done, `sort_sherr/matching/`): embeddings + LLM reranking
-3. Personalized email drafting based on company research
-4. Outreach tracker (sent / replied / follow-up dates)
+3. Company research + personalized email DRAFTS (done, `sort_sherr/outreach/`): never sends
+4. Outreach tracker + reply-rate metric (done, `sort_sherr/tracker/`): event log, follow-ups, stats. Never sends
 
 **Principle: quality over quantity. This is NOT a spam tool.**
 
@@ -57,8 +57,10 @@ or add abstractions "for later". Prefer plain functions, short modules and a com
   - bounded concurrency
   - an honest User-Agent
   - retries with backoff
-- Never scrape LinkedIn, Wellfound/AngelList, Indeed, Glassdoor, Crunchbase, or any site whose
-  terms forbid it. These are in `config.BLOCKED_DOMAINS`.
+- Never scrape LinkedIn, Wellfound/AngelList, Indeed, Glassdoor, Crunchbase, Apollo, RocketReach,
+  ZoomInfo, X/Twitter, or any site whose terms forbid it. These are in `config.BLOCKED_DOMAINS`.
+  A LinkedIn/X profile URL found on another page may be stored as a link, never fetched.
+- **No email-sending code anywhere** (no SMTP, no Gmail send). `test_no_send_code_anywhere` enforces it.
 - Prefer official public APIs and open datasets:
   - ATS APIs
   - yc-oss JSON
@@ -153,3 +155,109 @@ Part 2 tests use a made-up resume (`tests/fixtures/resume_fake.pdf/.docx`, rebui
   **Match pages are open (owner's choice: no password)**; only `/admin` uses `require_admin`. So
   Match has its own `/match/task.json` + `/match/stop` that only see/stop "Parse resume"/"Match"
   tasks, never admin crawls. Safe only because the server binds to 127.0.0.1.
+
+## Part 3: research + drafts (`sort_sherr/outreach/`)
+
+- Flow: `draft` (`run.py`) → for each top match of the latest reranked run: `research.py` → `contacts.py`
+  → `draft.py`. Then `review` (CLI) → pick variant → `$EDITOR` → approve → `drafts/<company>.txt`.
+- **Research:** reads the homepage, up to 5 own-site pages (`USEFUL_PAGES`), the careers page, the YC page and HN.
+  - The YC page's `data-page` JSON becomes text pages: company, founders + links, jobs, Launch YC posts, news headlines.
+  - HN: Algolia stories, kept by the strict `relevant_story` filter. The company's own HN hiring post comes from tier-0 jobs.
+  - One LLM call → `CompanyBrief`. `clean_brief` drops facts whose `source_url` isn't a page we read,
+    and people not named on their source page.
+  - Saved in `company_briefs` with `pages_json`, so contacts can be re-read without fetching.
+    Refreshed after `BRIEF_MAX_AGE_DAYS`.
+- **Contacts:** rule-based, no LLM.
+  - Sources: emails/tel/social links on first-party pages (`FIRST_PARTY_KINDS`); third-party pages research
+    already read (`hn`/`news`: company-domain emails + person-tied social links only); the GitHub users API
+    (only for profiles a first-party page linked); founders' own sites from GitHub's `blog` field
+    (`MAX_FOUNDER_SITES`, first-party/medium); and optional Hunter (`EmailFinder`, `HUNTER_API_KEY`).
+    X bios are never fetched (blocked); GitHub's `twitter_username` gives the handle.
+  - Email rule (owner's choice): on the company domain → kept. On another domain → kept only if a first-party
+    page published it (startups use gmail), with medium confidence and a note. Off-domain from GitHub/Hunter/founder sites/third-party pages → dropped (personal).
+  - Phones only from the company's own site.
+  - Pattern guesses are `is_guess=1` and never the default.
+  - MX via dnspython only, never SMTP.
+  - Ranking (`level`): first-party email > API-verified > third-party email > LinkedIn/X > apply URL.
+    Unknown role inboxes (no person, not hello@/contact@/info@, e.g. research@), bad inboxes (sales/support...)
+    and no-MX domains drop below DMs (owner's choice). Any local part containing "founder" counts as a founders inbox.
+  - `forget-contact` also adds the value to `forgotten_contacts`, so it is never saved again.
+- **Drafts:**
+  - Prompt rules live in `outreach/prompts/*.md` (+ `banned_phrases.txt`), never inline.
+  - Facts are cited as F-ids (`numbered_facts`), resume items as S-ids (`student_items`, which have no name or links).
+  - **Privacy:** the LLM only sees `[NAME]`/`[GITHUB]`/`[LINKEDIN]`/`[PORTFOLIO]`. They are filled locally
+    from `pii_json`/`profile.links` after generation.
+  - Checks: `rule_problems` (ids exist, ≥1 fact, every number appears in a source) + the LLM `grounding_check.md`
+    + hard lint. On failure: one rewrite with the problems as feedback, then `needs_review`.
+  - Similarity to other companies' drafts is only flagged.
+  - The ask uses the posted role only if it's an internship (`build_ask`), else Part 2's `pitch_role`.
+  - Signature links: `draft --github/--linkedin/--portfolio`, saved in `pii_json`. Invented link placeholders
+    (`[GITHUB_LINK]`) are normalized; ones without a value are removed in `fill_placeholders`.
+  - Lint also flags generic subjects and one-block bodies (both are hard problems, so they trigger a rewrite).
+- **Guardrails:**
+  - `DAILY_DRAFT_CAP` (10) per day per candidate: new companies + Part 4 follow-up drafts
+  - companies already written to are always skipped (`contacted_company_ids` reads Part 4's `outreach`)
+  - companies already drafted are skipped unless `--redo`
+- All tunables are in `outreach_config.py`. Token usage of every Part 3 command → `outreach_runs`.
+- Eval: `eval-drafts` = LLM judge (`judge.md`, 5 criteria 1–5) → `labels/draft_ratings.csv` with a `my_rating`
+  column (kept on re-runs); `--report` = mean abs diff, within-1, Pearson.
+- Tests: `FakeClient` (conftest, serves saved pages by URL), fake LLMs, stubbed MX. A `no_real_browser`
+  autouse fixture keeps Playwright off. Fixtures are trimmed real AfterQuery/YC/HN/GitHub responses; the Hunter
+  fixture follows the docs' shape (no key was available).
+- `drafts/` is gitignored. Contacts and drafts are personal data and stay in the local DB.
+- Website: `web/draft_pages.py` (`/match/candidates/{cid}/drafts...`), open like /match (127.0.0.1 only).
+  - Writes go through the CLI. The long `draft` runs through `runner` as task "Draft emails" (a `MATCH_TASKS`
+    entry, so /match/task can follow it). Quick ones (`approve-draft`, `mark-contacted`, `forget-contact`) use
+    `runner.run_now`, which is exec with an argument list and a timeout.
+  - Edited text is passed as `--subject=` / `--body=`. Form values are checked: top from `TOP_CHOICES`,
+    window by regex, setup in `SETUPS`, links https only, and the draft/contact id must belong to the page's company.
+  - The .txt download is built from the DB with `draft.export_text` (the same text the CLI writes to drafts/).
+
+## Part 4: outreach tracker (`sort_sherr/tracker/`)
+
+- **Never sends.** The student sends from their own inbox, then logs it (`sent`, `reply`, `status`, or the website).
+  Gmail integration was skipped on purpose (owner's choice); logging is manual for every channel.
+- **Storage (owner's rule: proper relational tables).** `outreach` (one per candidate+company; current `status`,
+  `channel`, `reply_type`; FKs to the draft and the contact, never copies) + `outreach_events` (the log: kind, at,
+  note, source manual/auto/migrated, followup_number, scheduled_for). CHECK constraints on every enum,
+  `PRAGMA foreign_keys = ON` in `connect()`. `email_drafts` gained `outreach_id` + `followup_number` (0 = first email).
+  - `record_event` writes the event AND updates outreach in one transaction.
+  - Events are read in insertion order (`ORDER BY id`); `at` is only for timings (a back-dated send stays after "drafted").
+  - `save_contacts` keeps contacts an outreach references (research refreshes must not break the link).
+  - Part 3's `contacted` rows are migrated on connect (idempotent); the old table is kept but no longer written.
+  - Part 3 views stay first-email only: `candidate_drafts`, `delete_drafts`, `companies_drafted_since` filter
+    `followup_number = 0`; `approve_draft` only un-chooses variants of the same message.
+- **Lifecycle** (`lifecycle.py`, `NEXT`): drafted → sent → replied → interview → offer/rejected; sent → bounced/ghosted;
+  any → withdrawn; ghosted → replied (late reply). A reply must be logged before interview/rejected/offer.
+  `answered` and `followup_sent` are events, not statuses. Approving a first draft creates the `drafted` outreach;
+  `sent <draft_id>` on a follow-up draft logs `followup_sent`. Dates from users are LOCAL time (`parse_when`).
+- **Follow-ups** (`followups.py`, numbers in `tracker_config.py`): business days Mon–Fri, no holidays. FU1 = sent + 5,
+  FU2 = ACTUAL FU1 send + 7, ghosted = actual FU2 send + 7. Only `sent` outreach gets follow-ups (any reply/bounce/final
+  status stops them). `due` sorts by priority (interviews → replies → follow-ups → ghosted → approved-not-sent) and
+  auto-marks ghosted (source `auto`); the website only shows it (pages never write).
+- **Follow-up drafts** (`followup_draft.py`, prompt `followup_email.md`): one variant, 25–60 words, subject
+  `Re: <first subject>`, ONE new thing: `--value` (redacted with `resume.redact`, added as a new S item) or a brief
+  fact the first email didn't cite (recent_updates first). Reuses Part 3's `rule_problems`, `grounding_problems`,
+  `fill_placeholders`; `lint(..., followup=True)` skips subject checks and bans bumps (`followup_banned_phrases.txt`).
+  One rewrite, then `needs_review`. Counts toward `DAILY_DRAFT_CAP`. Approved via `approve-draft` / the CLI loop;
+  exported to `drafts/<company>-followup-<n>.txt`. The website runs `followup --no-review` as task "Draft follow-up".
+- **Metrics** (`metrics.py`): reply rate = replied / (sent − bounced); positive, interview rate, median days to first
+  reply. Breakdowns: variant, recipient role, which message got the reply, contact type/source, score bucket, YC batch
+  year, team size, weekday, channel. Every group shows n; n < `SMALL_N` (10) is flagged and `verdict()` names a leader
+  only when every group has n ≥ 10. Feedback loop: `match` output / shortlist page show outreach badges + reply rates by
+  team size/batch/recipient. Information only; it never changes ranking.
+- **Outputs:** `outreach-stats` (terminal), `report --out` (one self-contained HTML, Jinja2 + inline SVG, no JS),
+  `export --out` (CSV without contact values or notes). Nothing is written unless `--out` is given; `reports/` and
+  `exports/` are gitignored. No reply text ever goes to an LLM.
+- **`forget`:** `--company` deletes outreach (+events, follow-up drafts by cascade), drafts, contacts (to
+  `forgotten_contacts`), `contacted` rows and `drafts/<slug>*.txt`; public company data stays. `--contact` deletes one
+  value everywhere (outreach keeps its history with `contact_id` NULL).
+- **Website** (`web/outreach_pages.py`, open like /match): `/match/candidates/{cid}/outreach` (Today + table),
+  `/outreach/stats` (+ `report.html`, `export.csv` built on request), `/outreach/{oid}` (timeline, reply/status forms
+  with only allowed moves, follow-up drafts). Drafts page: "I sent it" posts `/drafts/{company}/sent`. Same rules as
+  admin: read-only queries, writes via `run_now`/runner with argument lists, ids must belong to the candidate,
+  enums from fixed lists, dates by regex, free text as `--opt=value` (≤300 chars).
+- Tests: `outreach_db` fixture (conftest), `test_tracker.py` (model, migration, FKs, CLI, forget), `test_followups.py`
+  (dates at 12:00 UTC so any time zone works), `test_metrics.py` (rates, small n, report/CSV, follow-up drafts with a
+  fake LLM, cap), `test_outreach_web.py` (pages + exact CLI args).
+

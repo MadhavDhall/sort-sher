@@ -3,14 +3,15 @@
 Sort Sherr helps college students find **off-campus internships at good startups**, with
 YC-backed and recently funded companies first.
 
-The full project has four parts. **Parts 1 and 2 are built.**
+The full project has four parts. **All four are built.** New here? Start with the
+[end-to-end walkthrough](#how-to-use-sort-sherr-end-to-end).
 
 | # | Part | Status |
 |---|---|---|
 | 1 | **Ingestion**: collect startups and their open roles | ✅ Built |
 | 2 | **Resume parsing + matching** (embeddings + LLM reranking) | ✅ Built ([jump to Part 2](#part-2-resume--matching)) |
-| 3 | Personalized email drafting based on company research | ⏳ Not started |
-| 4 | Outreach tracker (sent / replied / follow-up dates) | ⏳ Not started |
+| 3 | **Company research + personalized email drafts** (drafts only, you send) | ✅ Built ([jump to Part 3](#part-3-company-research--email-drafts)) |
+| 4 | **Outreach tracker + reply rate** (sent / replied / follow-ups / what works) | ✅ Built ([jump to Part 4](#part-4-outreach-tracker--reply-rate)) |
 
 > Quality over quantity. This is **not** a spam tool.
 
@@ -320,6 +321,261 @@ plus what the rerank cost in tokens. `labels/` is in `.gitignore`.
   or LinkedIn/GitHub username, else the first line), and you **confirm it before anything is sent**.
 - The resume text is never logged or printed. Only the parsed profile is shown.
 
+## Part 3: company research → email drafts
+
+For your top matches, Sort Sherr reads the company's public pages, finds who to write to (with the
+page each contact came from), and writes **two short email drafts** per company. You pick one, edit
+it, and **send it yourself**. There is no sending code anywhere in this project.
+
+```
+ top matches (Part 2)
+   └─► research: homepage, about/blog/changelog pages, careers page, YC page (founders, Launch YC,
+       news headlines), Hacker News stories, their HN hiring post
+         └─► LLM brief: what they build, who for, tech, recent updates (dated), hiring areas, people
+             every fact keeps its SOURCE URL; facts citing a page we didn't read are dropped
+   └─► contacts: emails / founder LinkedIn + X / apply page, each with "found at <url>"
+   └─► 2 drafts: A = product-led opening, B = project-led opening
+         └─► checks: rules + an LLM fact-check + lint → rewritten once if needed, else "needs_review"
+   └─► review: pick a/b → edit in $EDITOR → approve → drafts/<company>.txt
+```
+
+### On the website (easiest)
+
+`python -m sort_sherr.cli serve`, then **Match me → your resume → ✉ Email drafts**
+(or the **✉ Draft emails** button on a shortlist).
+
+- **Drafts page:** start a run (how many top matches, your availability, remote/onsite, signature
+  links). It shows the daily cap and which companies are drafted, approved or contacted.
+- **One company:**
+  - The suggested recipient comes with a **"found here"** link to the page it was found on.
+    All contacts are listed, each with a "Forget" button.
+  - Both variants appear side by side in editable boxes, with the facts each one used (source links)
+    and any check or lint notes.
+  - **Approve this one** saves your edited text (lint runs on it again). **Copy** puts subject + body
+    on your clipboard, and **Download .txt** saves it.
+  - After approving, **I sent it** (channel + date) logs the send: the company is never drafted again
+    and Part 4's follow-up clock starts. Without an approved draft, **I've contacted them** just marks it.
+
+As with the rest of the site, the pages only read the database. Every change runs the normal CLI
+command (`draft`, `approve-draft`, `sent`, `mark-contacted`, `forget-contact`).
+
+### Commands
+
+```bash
+# Draft for your top matches (latest reranked run). Asks for your availability if not given.
+python -m sort_sherr.cli draft --candidate 1 --top 5 --setup remote --window "Summer 2027"
+# Signature links (saved locally once; never sent to the LLM). Without them, drafts have no link lines.
+python -m sort_sherr.cli draft --candidate 1 --github https://github.com/you --portfolio https://you.dev --redo
+
+# Go through them: pick a variant, edit it, approve. Saved to drafts/<company>.txt (+ --copy to clipboard)
+python -m sort_sherr.cli review --candidate 1 --copy
+
+# Sent it? Log it (Part 4). Wrote to a company some other way? mark-contacted. Either way it is never drafted again:
+python -m sort_sherr.cli sent 12 --channel email
+python -m sort_sherr.cli mark-contacted --candidate 1 --company 4
+
+# One company at a time
+python -m sort_sherr.cli research --company 4      # the brief, every fact with its source
+python -m sort_sherr.cli contacts --company 4      # ranked contacts with their source pages
+python -m sort_sherr.cli forget-contact --company 4 --id 7   # delete one (or all, without --id)
+```
+
+### How a draft is built
+
+- **Inputs:** your parsed resume as numbered items (S1, S2…), the brief's facts (F1, F2…), Part 2's
+  match reasons, and the ask: your availability, remote/onsite, and the role. The role is the posted
+  role only if it is an internship; otherwise it's the intern role Part 2 suggested.
+- **Rules** are in `sort_sherr/outreach/prompts/draft_email.md`:
+  - 90–150 words, and a specific subject of at most 8 words
+  - one sourced observation about them
+  - ONE of your projects tied to what they build
+  - one small ask
+  - plain text, no flattery or buzzwords
+- **Your name and links are never sent to the LLM.** It writes `[NAME]`, `[GITHUB]`, `[LINKEDIN]` and
+  `[PORTFOLIO]`, and they are filled in on your computer afterwards.
+- **Grounding check:**
+  - Rules: the cited ids must exist, at least one company fact must be cited, and every number must appear in a source.
+  - A second LLM pass matches each claim about the company or about you to a fact or resume item.
+  - Any problem → the draft is rewritten once. Still wrong → `needs_review`. `review` shows which facts each
+    draft used, with their links.
+- **Lint** (also run after you edit):
+  - word count and subject length
+  - a generic subject ("Software Engineering Intern Role")
+  - one block of text with no paragraphs
+  - banned phrases (`prompts/banned_phrases.txt`)
+  - unfilled placeholders
+  - "too similar" to your draft for another company
+- **Guardrails:**
+  - at most **10 companies a day** (`SORT_SHERR_DAILY_DRAFT_CAP`)
+  - companies you marked contacted are skipped, and so are companies already drafted (`--redo` to redraft)
+
+### Who to write to (contacts)
+
+| Source | What | Type |
+|---|---|---|
+| Their website, YC page, their HN posts | emails, founders' LinkedIn/X links, phone (own site only) | first-party |
+| A founder's own website (the one their GitHub profile names) | work email, their own GitHub/LinkedIn/X | first-party (medium) |
+| Other people's HN stories / news pages about the company | work email (company domain only), founders' profile links | third-party |
+| GitHub API (only profiles their pages link to) | public work email, website, X handle | third-party |
+| Hunter.io API (optional, `HUNTER_API_KEY`, free plan) | emails with their sources; the domain's pattern | api |
+
+- An email **on the company's domain** is always kept.
+- An email on **another domain** (gmail, a university…) is kept only if **the company itself published
+  it** on its own pages. Many small startups use gmail. Such emails are marked "not on the company domain".
+- An off-domain email found only on GitHub, Hunter, a founder's personal site or someone else's page is someone's personal address. It is **not collected**.
+- Hunter's pattern guesses are labeled **UNVERIFIED GUESS** and are never the default recipient.
+- Emails are checked with a DNS MX lookup (is there a mail server?) only. There is no SMTP probing.
+- LinkedIn, X, Apollo, RocketReach and ZoomInfo are never fetched. A LinkedIn/X profile URL that a
+  company page links to is stored as a link.
+
+The **default recipient** is chosen in this order:
+1. first-party work email
+2. API-verified email
+3. third-party email
+4. LinkedIn/X DM
+5. apply page
+
+These rank below DMs:
+- inboxes we can't place (research@, data@…)
+- sales, support and similar inboxes
+- domains with no mail server
+
+A founder's LinkedIn is a better bet than any of them.
+
+**Always open the "found at" link before sending.**
+
+### Do the drafts look good? (eval-drafts)
+
+```bash
+python -m sort_sherr.cli eval-drafts --candidate 1          # LLM judge, fixed rubric (prompts/judge.md)
+# open labels/draft_ratings.csv and fill my_rating (1-5) for each draft
+python -m sort_sherr.cli eval-drafts --candidate 1 --report # judge vs you: mean difference, within 1 point, correlation
+```
+
+The judge scores specificity, grounding, relevance, length and tone from 1 to 5. Every Part 3 command
+logs its LLM calls and tokens in the `outreach_runs` table. Part 3 settings live in
+`sort_sherr/outreach_config.py`.
+
+### Privacy (Part 3)
+
+- Contacts, briefs and drafts live in `data/sort_sherr.db`. Approved emails are saved in `drafts/`.
+  Both are in `.gitignore`.
+- `forget-contact` deletes a contact and remembers the value so it is never saved again.
+- Only public pages go to the LLM. Your name, email and links never do.
+
+## Part 4: outreach tracker + reply rate
+
+The core metric of Sort Sherr is **reply rate**. Part 4 tracks every email from draft to outcome,
+tells you when to follow up, writes short follow-up drafts that add something new, and shows what
+actually gets replies. It still **never sends anything**: you send from your own inbox and log it.
+
+```
+ drafted ──► sent ──► replied (positive / neutral / negative) ──► interview ──► offer / rejected
+               ├──► bounced          └─ no reply: follow-up 1 (5 business days) ──► follow-up 2 (7 more)
+               └──► withdrawn                                      └─ still nothing (7 more) ──► ghosted
+```
+
+Every change is saved as an **event with a timestamp** (not just the latest status), so we can compute
+"days to reply" and "which message got the reply".
+
+### On the website (easiest)
+
+**Match me → your resume → 📬 Outreach tracker** (also linked from the drafts pages).
+
+- **Outreach:** the **Today** list (interviews coming up, replies to answer, follow-ups due, most urgent
+  first) and a table of every company you wrote to, with its status and what's next.
+- **One company:** a timeline of everything that happened, plus forms to **log a reply**, **set a status**
+  (only the moves that make sense are offered), **draft a follow-up**, approve it and mark it sent.
+- **Reply rate & stats:** the funnel and every breakdown, each group with its **n**. Groups under 10 are
+  flagged `n<10`, and no "winner" is named until every group compared has at least 10. Download the
+  HTML report or a CSV from there.
+- **Shortlists** (Part 2) show a badge on companies you already wrote to, and a small "your outreach so
+  far" box (reply rate by team size, batch and recipient). It's information only: the ranking doesn't use it.
+
+### Commands
+
+```bash
+python -m sort_sherr.cli sent 12 --channel email --at "2026-11-20 10:30"   # you sent draft #12
+python -m sort_sherr.cli outreach --candidate 1        # everything, with ids and what's next
+python -m sort_sherr.cli due --candidate 1             # what to do TODAY (also marks silent ones ghosted)
+python -m sort_sherr.cli followup 3 --value="shipped PDF export for PaperPal"   # draft follow-up for outreach #3
+python -m sort_sherr.cli sent 31                        # you sent follow-up draft #31 (same command)
+python -m sort_sherr.cli reply 3 --type positive --note="wants a call next week"
+python -m sort_sherr.cli status 3 answered              # you wrote back to their reply
+python -m sort_sherr.cli status 3 interview --when "2026-12-03 15:00"
+python -m sort_sherr.cli status 3 offer                 # or rejected / ghosted / bounced / withdrawn
+python -m sort_sherr.cli outreach-stats --candidate 1   # reply rate + breakdowns in the terminal
+python -m sort_sherr.cli report --candidate 1 --out reports/outreach.html   # one HTML file, open in a browser
+python -m sort_sherr.cli export --candidate 1 --out exports/outreach.csv    # one row per outreach
+python -m sort_sherr.cli forget --company 4             # delete ALL personal data about a company
+python -m sort_sherr.cli forget --contact=ravi@acme.dev # delete one address everywhere
+```
+
+### Follow-ups
+
+- **When:** 5 business days (Mon–Fri) after the first email with no reply, then 7 business days after
+  follow-up 1 was *actually sent*. At most 2. Seven business days after the last one, it's ghosted.
+  Any reply or bounce stops this at once. The numbers live in `sort_sherr/tracker_config.py`.
+- **What:** one short email (25–60 words) in the same thread (`Re: <your subject>`) that adds **one new
+  thing**: something you give with `--value` (a project you shipped, something you tried with their
+  product), or else a company fact your first email didn't use, newest first.
+- **Checks:** the same as Part 3 (cited ids, every number from a source, the LLM fact-check, lint). Lint
+  also rejects "bumps" like "just following up" or "any update?" (`prompts/followup_banned_phrases.txt`).
+- Follow-up drafts count toward the same **daily cap** as new drafts.
+
+### What the numbers mean
+
+- **Reply rate** = replies ÷ emails that reached someone (bounces are excluded).
+- **Positive reply rate**, **interview rate**, and **median days to reply** are also shown.
+- **Breakdowns:**
+  - email variant (product-led vs project-led)
+  - recipient role (founder / hiring or eng lead / hiring inbox / general inbox)
+  - contact type and source (first-party / third-party / API)
+  - match score bucket
+  - YC batch year
+  - team size
+  - which message got the reply (first email / follow-up 1 / 2)
+  - day of the week sent
+  - channel
+- With only a few emails, rates jump around: 1 reply out of 3 is 33%. That's why every number shows
+  its n, and why "too few to judge" is the usual verdict at first.
+
+### Privacy (Part 4)
+
+- Outreach history lives in `data/sort_sherr.db` (gitignored). Store a short note, not their email text.
+- Reports and CSVs are written only where you say (`--out`). `reports/` and `exports/` are gitignored.
+  The CSV has no contact addresses or notes.
+- No reply text is sent to any LLM. A follow-up's `--value` is redacted (links, emails, your name) before
+  the LLM sees it, like your resume.
+- `forget` deletes a company's contacts, drafts, outreach history and `drafts/` files, or one contact
+  everywhere. Forgotten values are never saved again.
+- There is no Gmail integration (yet): logging is manual, which works the same for email, LinkedIn, X
+  and apply forms.
+
+## How to use Sort Sherr, end to end
+
+Each step builds on the one before. Steps 3 onwards also work on the website (`serve`, then **Match me**).
+
+```bash
+# 0. once: install (see Setup) and put a free GEMINI_API_KEY in .env
+python -m sort_sherr.cli seed --source yc && python -m sort_sherr.cli seed --source hn   # 1. load startups
+python -m sort_sherr.cli discover && python -m sort_sherr.cli crawl                      # 2. find their jobs
+python -m sort_sherr.cli parse-resume uploads/me.pdf                                     # 3. your profile -> candidate id
+python -m sort_sherr.cli match --candidate 1 --top 15 --interests "dev tools, agents"     # 4. your shortlist
+python -m sort_sherr.cli draft --candidate 1 --top 5 --window "Summer 2027"              # 5. research + 2 drafts each
+python -m sort_sherr.cli review --candidate 1 --copy                                     # 6. pick, edit, approve
+#    ... send the email YOURSELF, from your own inbox ...
+python -m sort_sherr.cli sent <draft id>                                                 # 7. log it
+python -m sort_sherr.cli due --candidate 1                                               # 8. every day: what to do
+python -m sort_sherr.cli followup <outreach id>                                          #    a follow-up is due
+python -m sort_sherr.cli reply <outreach id> --type positive                             #    they answered!
+python -m sort_sherr.cli outreach-stats --candidate 1                                    # 9. what works
+python -m sort_sherr.cli report --candidate 1 --out reports/outreach.html
+```
+
+A good rhythm: run `due` each morning, draft for a few new companies (the daily cap is 10), and look at
+`outreach-stats` once you have 10+ emails per group.
+
 ## How companies are ranked (quality_score)
 
 There's no free funding dataset, and Crunchbase forbids scraping, so we use YC signals instead:
@@ -360,7 +616,9 @@ Sort sherr/
 ├── pyproject.toml         ← dependencies
 ├── sort_sherr/
 │   ├── cli.py             ← commands: seed, discover, crawl, stats, serve,
-│   │                         parse-resume, match, explain, eval
+│   │                         parse-resume, match, explain, eval,
+│   │                         research, contacts, forget-contact, draft, review, mark-contacted, eval-drafts,
+│   │                         sent, reply, status, outreach, due, followup, outreach-stats, report, export, forget
 │   ├── match_config.py    ← Part 2: every matching number (top-K, weights, boosts, token prices)
 │   ├── matching/          ← Part 2
 │   │   ├── models.py      ← CandidateProfile, Preferences, RerankResult
@@ -372,7 +630,27 @@ Sort sherr/
 │   │   ├── run.py         ← one match run, start to finish
 │   │   ├── roles.py       ← suggested roles from focus areas / skills
 │   │   └── evaluate.py    ← precision@K, nDCG@K, label CSV
-│   ├── web/               ← the website: app.py (routes), match_pages.py (Match me), runner.py (tasks),
+│   ├── outreach_config.py ← Part 3: every research/draft number (cap, refresh age, word limits)
+│   ├── outreach/          ← Part 3 (drafts only, never sends)
+│   │   ├── models.py      ← Page, CompanyBrief (facts with source URLs), Contact, DraftPair
+│   │   ├── research.py    ← pick + fetch public pages → LLM brief → drop unsourced facts → cache
+│   │   ├── contacts.py    ← contacts from those pages, GitHub API, optional Hunter; MX check; ranking
+│   │   ├── draft.py       ← 2 variants → fill your links locally → grounding check → one rewrite
+│   │   ├── lint.py        ← word count, subject, banned phrases, placeholders, similarity
+│   │   ├── run.py         ← one `draft` run: daily cap (follow-ups count), skip companies already written to
+│   │   ├── judge.py       ← LLM-as-judge + your ratings CSV + agreement report
+│   │   └── prompts/       ← brief.md, draft_email.md, followup_email.md, grounding_check.md, judge.md,
+│   │                         banned_phrases.txt, followup_banned_phrases.txt
+│   ├── tracker_config.py  ← Part 4: follow-up days, max follow-ups, small-n threshold, buckets
+│   ├── tracker/           ← Part 4 (tracks; never sends)
+│   │   ├── lifecycle.py   ← statuses, allowed moves, sent / reply / status
+│   │   ├── followups.py   ← business days, next action, `due`
+│   │   ├── followup_draft.py ← one short follow-up with one new thing, Part 3's checks
+│   │   ├── metrics.py     ← reply rate, breakdowns with n, CSV, match feedback
+│   │   ├── report.py      ← self-contained HTML report
+│   │   └── templates/report.html
+│   ├── web/               ← the website: app.py (routes), match_pages.py (Match me), draft_pages.py (drafts),
+│   │                         outreach_pages.py (tracker), runner.py (tasks),
 │   │                         templates/, static/
 │   ├── config.py          ← settings (User-Agent, limits, DB path, LLM model)
 │   ├── models.py          ← data shapes: Company, JobDraft, Job
@@ -406,3 +684,10 @@ Sort sherr/
 - **Matching is only as good as the company data.** Most YC companies have a one-line description
   and no crawled jobs, so the LLM often has little to go on. Run `crawl` on more companies to help.
 - **Gemini free tier can be overloaded** (503) for a while. Re-run later; finished work is cached.
+- **Research only reads what's linked.** It reads the homepage, up to 5 of the company's own pages, the YC page and HN. It does no
+  open web search for news, podcasts or talks: there is no free search API whose terms allow it.
+- **Contacts are often generic inboxes.** Few startups list a founder's email. Expect the founder's LinkedIn/X
+  (from the YC page) or an inbox like hello@/research@ as the best option, and judge it yourself.
+- **No Gmail integration.** Approved drafts go to `drafts/*.txt` and the clipboard; you paste and send,
+  then log sends and replies by hand (`sent`, `reply`, or the website).
+- **Business days skip weekends only**, not public holidays.

@@ -8,6 +8,7 @@ Pages (all HTML, made on the server with Jinja2 templates in web/templates/):
   /companies/{id}    one company: details, why it got its score, all its jobs
   /admin             stats + buttons to run seed / discover / crawl, with live output
   /match/...         Part 2: upload a resume, get a ranked shortlist (see match_pages.py)
+  /match/candidates/{id}/drafts...   Part 3: research + email drafts, edit + approve (see draft_pages.py)
 JSON (used by the admin page's little script):
   /admin/task        the current task's status and log
 """
@@ -242,3 +243,15 @@ async def admin_stop():
 from . import match_pages  # noqa: E402  (needs the helpers above)
 
 app.include_router(match_pages.setup(templates, get_conn, int_or))  # open: no admin password
+
+# ---------- Part 3: research + email drafts (routes live in draft_pages.py) ----------
+
+from . import draft_pages  # noqa: E402
+
+app.include_router(draft_pages.setup(templates, get_conn, int_or))  # open, like /match (127.0.0.1 only)
+
+# ---------- Part 4: outreach tracker (routes live in outreach_pages.py) ----------
+
+from . import outreach_pages  # noqa: E402
+
+app.include_router(outreach_pages.setup(templates, get_conn, int_or))  # open, like /match (127.0.0.1 only)

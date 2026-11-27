@@ -107,3 +107,21 @@ class Runner:
 
 
 runner = Runner()  # one shared runner for the whole app
+
+
+async def run_now(args: list[str], timeout: float = 60) -> tuple[int, str]:
+    """Run a QUICK CLI command (approve a draft, mark contacted...) and wait for it. Same safety as
+    the runner: exec with an argument list, never a shell. Returns (exit code, printed output).
+    Long jobs (crawl, match, draft) go through `runner` instead, so their log can be followed live."""
+    env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONWARNINGS": "ignore"}
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, "-m", "sort_sherr.cli", *args,
+        cwd=PROJECT_ROOT, env=env, stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+    )
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return 1, "timed out"
+    return proc.returncode, out.decode(errors="replace")

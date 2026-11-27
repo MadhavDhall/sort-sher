@@ -1,0 +1,31 @@
+{
+  "_note": "Shape from Hunter's API docs (hunter.io/api-documentation/v2#domain-search), trimmed. No API key was available to save a live response.",
+  "data": {
+    "domain": "acme.dev",
+    "organization": "Acme",
+    "pattern": "{first}",
+    "emails": [
+      {
+        "value": "ravi@acme.dev", "type": "personal", "confidence": 94,
+        "first_name": "Ravi", "last_name": "Kumar", "position": "CTO",
+        "sources": [{"domain": "blog.acme.dev", "uri": "https://blog.acme.dev/hello-world", "extracted_on": "2026-05-01"}],
+        "verification": {"date": "2026-10-01", "status": "valid"}
+      },
+      {
+        "value": "ops@acme.dev", "type": "generic", "confidence": 71,
+        "first_name": null, "last_name": null, "position": null,
+        "sources": [{"domain": "acme.dev", "uri": "https://acme.dev/legal", "extracted_on": "2026-03-12"}],
+        "verification": {"date": null, "status": null}
+      },
+      {
+        "value": "nosource@acme.dev", "type": "generic", "confidence": 50,
+        "sources": [], "verification": {"status": null}
+      },
+      {
+        "value": "ravi.k@gmail.com", "type": "personal", "confidence": 80,
+        "sources": [{"uri": "https://some-forum.example/thread/1"}], "verification": {"status": "valid"}
+      }
+    ]
+  },
+  "meta": {"results": 4, "limit": 10, "offset": 0}
+}

@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Outreach{% endblock %}
+{% block content %}
+<p class="small"><a href="/match/candidates/{{ cid }}">← Profile</a> · <a href="/match/candidates/{{ cid }}/drafts">Email drafts</a></p>
+<div class="task-head">
+  <div>
+    <h1>Outreach</h1>
+    <p class="muted" style="margin:0">Every company you wrote to. You send from your own inbox; log it here, and Sort Sherr tells you when to follow up.</p>
+  </div>
+  <div><a class="button secondary" href="/match/candidates/{{ cid }}/outreach/stats">📊 Reply rate &amp; stats</a></div>
+</div>
+
+{% if message %}<p class="notice">{{ message }}</p>{% endif %}
+
+<div class="stats" style="margin:1rem 0">
+  <div class="stat"><div class="n">{{ s.sent }}</div><div class="k">sent</div></div>
+  <div class="stat"><div class="n">{{ pct(s.reply_rate) }}</div><div class="k">reply rate{% if s.delivered %} ({{ s.delivered }} delivered){% endif %}</div></div>
+  <div class="stat"><div class="n">{{ funnel.interview }}</div><div class="k">interviews</div></div>
+  <div class="stat"><div class="n">{{ due | length }}</div><div class="k">to do today</div></div>
+</div>
+
+<!-- ---------- Today ---------- -->
+<div class="card">
+  <h3 class="card-h">Today · {{ today }}</h3>
+  {% if due %}
+  <ol class="due-list">
+    {% for i in due %}
+    {% set a = i.action %}
+    <li>
+      <span class="badge {{ {'interview': 'good', 'reply': 'good', 'followup': 'warn', 'ghost': 'plain', 'send': 'plain'}[a.kind] }}">{{ {'interview': 'interview', 'reply': 'reply', 'followup': 'follow-up', 'ghost': 'ghosted?', 'send': 'not sent'}[a.kind] }}</span>
+      <a href="/match/candidates/{{ cid }}/outreach/{{ i.id }}"><strong>{{ i.company_name }}</strong></a>: {{ a.label }}
+      {% if a.kind == 'followup' and i.days_late > 0 %}<span class="small muted">({{ i.days_late }} day{{ 's' if i.days_late != 1 }} late)</span>{% endif %}
+      {% if a.kind == 'followup' and a.draft_id %}<span class="small muted">· draft ready</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+  {% else %}
+  <p class="muted">Nothing due today. 🎉 A good moment to <a href="/match/candidates/{{ cid }}/drafts">draft for new companies</a>.</p>
+  {% endif %}
+</div>
+
+<!-- ---------- everything ---------- -->
+<h2 style="margin-top:1.5rem">All outreach ({{ rows | length }})</h2>
+{% if rows %}
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>Company</th><th>Status</th><th>Channel</th><th>Sent</th><th>To</th><th>Next</th></tr></thead>
+    <tbody>
+    {% for o in rows %}
+      <tr>
+        <td><a href="/match/candidates/{{ cid }}/outreach/{{ o.id }}">{{ o.company_name }}</a></td>
+        <td><span class="badge {{ {'replied': 'good', 'interview': 'good', 'offer': 'good', 'sent': '', 'drafted': 'plain', 'bounced': 'bad', 'rejected': 'bad', 'ghosted': 'plain', 'withdrawn': 'plain'}[o.status] }}">{{ o.status }}</span>
+          {% if o.reply_type %}<span class="small muted">{{ o.reply_type }}</span>{% endif %}</td>
+        <td class="small">{{ o.channel }}</td>
+        <td class="small" style="white-space:nowrap">{{ o.sent_on or "-" }}</td>
+        <td class="small">{{ o.contact_person or o.contact_value or '-' }}{% if o.contact_role %}<div class="muted">{{ o.contact_role }}</div>{% endif %}</td>
+        <td class="small">{% if o.next %}{{ o.next.label }}{% if o.next.due_on > today %} <span class="muted">· {{ o.next.due_on }}</span>{% endif %}{% else %}<span class="muted">-</span>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="card"><p class="muted">No outreach yet. On <a href="/match/candidates/{{ cid }}/drafts">Email drafts</a>, approve a variant,
+  send it from your own email, then press <strong>“I sent it”</strong>.</p></div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}{{ o.company_name }} · outreach{% endblock %}
+{% block content %}
+<p class="small"><a href="/match/candidates/{{ cid }}/outreach">← All outreach</a></p>
+<div class="task-head">
+  <div>
+    <h1>{{ o.company_name }}</h1>
+    <p class="muted" style="margin:0">
+      <span class="badge {{ 'good' if o.status in ('replied', 'interview', 'offer') else 'bad' if o.status in ('bounced', 'rejected') else 'plain' if o.status in ('drafted', 'ghosted', 'withdrawn') else '' }}">{{ o.status }}</span>
+      {% if o.reply_type %}{{ o.reply_type }} reply · {% endif %}via {{ o.channel }}
+      {% if o.contact_value %} · to {{ o.contact_person or o.contact_value }}{% if o.contact_role %} ({{ o.contact_role }}){% endif %}
+        · <a href="{{ o.contact_source_url }}" target="_blank" rel="noopener noreferrer">found here ↗</a>{% endif %}
+    </p>
+  </div>
+  <div><a class="button secondary" href="/match/candidates/{{ cid }}/drafts/{{ o.company_id }}">The first email</a></div>
+</div>
+
+{% if message %}<p class="notice">{{ message }}</p>{% endif %}
+{% if action %}
+<p class="notice {{ 'good-notice' if action.kind in ('reply', 'interview') else '' }}">
+  <strong>Next:</strong> {{ action.label }}{% if action.due_on > today %} · on {{ action.due_on }}{% elif action.kind == 'followup' and action.due_on < today %} · was due {{ action.due_on }}{% endif %}
+</p>
+{% endif %}
+
+<div class="two-col">
+  <!-- ---------- timeline ---------- -->
+  <div class="card">
+    <h3 class="card-h">Timeline</h3>
+    <ol class="timeline">
+      {% for e in events %}
+      <li>
+        <span class="when small muted">{{ e.at | localday }}</span>
+        <strong>{{ 'follow-up ' ~ e.followup_number ~ ' sent' if e.kind == 'followup_sent' else 'you answered' if e.kind == 'answered' else e.kind }}</strong>
+        {% if e.kind == 'interview' and e.scheduled_for %}<span class="small">· on {{ e.scheduled_for | localtime }}</span>{% endif %}
+        {% if e.source != 'manual' %}<span class="badge plain">{{ e.source }}</span>{% endif %}
+        {% if e.note %}<div class="small muted">“{{ e.note }}”</div>{% endif %}
+      </li>
+      {% endfor %}
+    </ol>
+  </div>
+
+  <!-- ---------- log what happened ---------- -->
+  <div class="card">
+    <h3 class="card-h">Log what happened</h3>
+    {% if o.status in ('sent', 'replied', 'ghosted') %}
+    <form method="post" action="/match/candidates/{{ cid }}/outreach/{{ o.id }}/reply" class="stack">
+      <div class="row-fields">
+        <label class="field"><span>They replied</span>
+          <select name="type">{% for t in reply_types %}<option value="{{ t }}">{{ t }}</option>{% endfor %}</select></label>
+        <label class="field"><span>On</span><input type="date" name="at" max="{{ today }}" value="{{ today }}"></label>
+      </div>
+      <label class="field"><span>Note <small class="muted">(optional, short: no need to paste their email)</small></span>
+        <input type="text" name="note" maxlength="300" placeholder="e.g. wants a call next week"></label>
+      <button type="submit">Log reply</button>
+    </form>
+    <hr>
+    {% endif %}
+    {% if statuses %}
+    <form method="post" action="/match/candidates/{{ cid }}/outreach/{{ o.id }}/status" class="stack">
+      <div class="row-fields">
+        <label class="field"><span>Status</span>
+          <select name="status">{% for st in statuses %}<option value="{{ st }}">{{ 'answered (I wrote back)' if st == 'answered' else st }}</option>{% endfor %}</select></label>
+        {% if 'interview' in statuses %}<label class="field"><span>Interview time <small class="muted">(interview only)</small></span>
+          <input type="datetime-local" name="when"></label>{% endif %}
+      </div>
+      <label class="field"><span>Note <small class="muted">(optional)</small></span><input type="text" name="note" maxlength="300"></label>
+      <button type="submit" class="secondary">Save status</button>
+      <p class="small muted">Only the next steps that make sense are listed (an interview needs a reply first).</p>
+    </form>
+    {% else %}<p class="muted">This one is finished ({{ o.status }}): nothing more to log.</p>{% endif %}
+  </div>
+</div>
+
+<!-- ---------- follow-ups ---------- -->
+{% if first %}
+<h2 style="margin-top:1.5rem">Follow-ups <span class="small muted">(at most {{ max_followups }}, each adding one new thing)</span></h2>
+{% for d in followups %}
+<form class="card draft" method="post" action="/match/candidates/{{ cid }}/outreach/{{ o.id }}/approve">
+  <div class="task-head">
+    <h3 class="card-h">Follow-up {{ d.followup_number }}</h3>
+    <div>
+      {% if d.followup_number in logged %}<span class="badge good">sent</span>{% elif d.chosen %}<span class="badge good">approved</span>{% endif %}
+      <span class="badge {{ 'good' if d.check_status == 'ok' else 'warn' }}">check: {{ d.check_status }}</span>
+    </div>
+  </div>
+  <input type="hidden" name="draft_id" value="{{ d.id }}">
+  <label class="field"><span>Subject <small class="muted">(same thread: reply to your first email)</small></span>
+    <input type="text" name="subject" maxlength="200" required value="{{ d.subject }}"></label>
+  <label class="field"><span>Body</span>
+    <textarea name="body" rows="7" maxlength="5000" required>{{ d.edited_body or d.body }}</textarea></label>
+  {% for note in d.check_notes %}<p class="small notice bad-notice">Check: {{ note }}</p>{% endfor %}
+  {% for flag in d.lint_flags %}<p class="small notice bad-notice">Lint: {{ flag }}</p>{% endfor %}
+  <p class="small muted">New value: {% for f in d.facts_used %}{{ f.id }} {{ f.text }}{% if f.date %} ({{ f.date }}){% endif %}{{ '; ' if not loop.last }}{% endfor %}
+    {% for i in d.student_items_used %}· {{ i.text[:120] }}{% endfor %}</p>
+  {% if d.followup_number not in logged %}
+  <div class="actions">
+    <button type="submit">{{ 'Save my edits' if d.chosen else 'Approve' }}</button>
+  </div>
+  {% endif %}
+</form>
+{% if d.chosen and d.followup_number not in logged and o.status == 'sent' %}
+<form class="card" method="post" action="/match/candidates/{{ cid }}/outreach/{{ o.id }}/sent">
+  <input type="hidden" name="draft_id" value="{{ d.id }}">
+  <div class="row-fields">
+    <label class="field"><span>Sent follow-up {{ d.followup_number }} on</span><input type="date" name="at" max="{{ today }}" value="{{ today }}"></label>
+  </div>
+  <button type="submit">I sent follow-up {{ d.followup_number }}</button>
+</form>
+{% endif %}
+{% endfor %}
+
+{% if o.status == 'sent' and logged | length < max_followups %}
+<form class="card" method="post" action="/match/candidates/{{ cid }}/outreach/{{ o.id }}/followup">
+  <h3 class="card-h">Draft follow-up {{ logged | length + 1 }}</h3>
+  <p class="small muted">Under 60 words, in the same thread, adding ONE new thing (never “just bumping this”).
+    Leave the box empty to use a company fact your first email didn't mention (e.g. a recent launch).</p>
+  <label class="field"><span>Something new from you <small class="muted">(optional)</small></span>
+    <input type="text" name="value" maxlength="300" placeholder="e.g. shipped PDF export for PaperPal; tried your new SDK and wrote up notes"></label>
+  {% if followups | selectattr('followup_number', 'equalto', logged | length + 1) | list %}
+  <label class="small"><input type="checkbox" name="redo" value="1"> write it again (replaces the draft above)</label>
+  {% endif %}
+  <div class="actions">
+    <button type="submit" {{ 'disabled' if not llm_on or busy }}>Draft follow-up</button>
+    {% if not llm_on %}<span class="small muted">Needs a free GEMINI_API_KEY in .env.</span>{% elif busy %}<span class="small muted">A task is running.</span>{% endif %}
+  </div>
+</form>
+{% endif %}
+{% endif %}
+{% endblock %}
