@@ -21,7 +21,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 @pytest.fixture
 def started(monkeypatch):
     calls = []
-    monkeypatch.setattr(match_pages.runner, "start", lambda title, commands: calls.append((title, commands)))
+    monkeypatch.setattr(match_pages.runner, "start", lambda title, commands, owner=None: calls.append((title, commands)))
     return calls
 
 
@@ -97,7 +97,8 @@ def test_parse_validates_then_runs_cli(setup, started):
 
     r = c.post("/match/parse", data={"file_id": file_id, "name": " Priya  Raman ", "grad_year": "2028"}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == f"/match/task?next=/match/resume/{file_id}"
-    assert started == [("Parse resume", [["parse-resume", f"uploads/{file_id}", "--name=Priya Raman", "--grad-year", "2028"]])]
+    assert started == [("Parse resume", [["parse-resume", f"uploads/{file_id}", "--name=Priya Raman", "--grad-year", "2028",
+                                         "--delete-file"]])]  # the resume file is never kept
 
 
 def test_candidate_page_suggests_roles_and_shortlist_sizes(setup):

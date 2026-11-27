@@ -1,7 +1,7 @@
 """Part 2 on the website: upload a resume, pick preferences, see the ranked shortlist.
 
-Pages (OPEN: no password, unlike /admin. Fine because the server only listens on 127.0.0.1,
-i.e. this computer. Don't expose the site to a network: these pages show resume data):
+Pages (locally OPEN, because the server only listens on 127.0.0.1. HOSTED: every page needs a login
+and auth.owner_guard (added in app.py) lets a student see only their own resumes, runs and tasks):
   /match                              upload a resume; list of parsed resumes
   POST /match/upload                  save the file, guess the name -> confirm page
   POST /match/parse                   runs `parse-resume` (with the confirmed name + grad year)
@@ -17,7 +17,6 @@ CLI command through the runner, with every form value checked first.
 """
 
 import csv
-import hashlib
 import io
 import json
 import math
@@ -30,6 +29,7 @@ from .. import config, match_config
 from ..matching.models import ROLE_CHOICES, CandidateProfile, Preferences
 from ..matching.roles import suggest_roles
 from ..storage import db
+from . import auth
 from .runner import PROJECT_ROOT, runner
 
 UPLOAD_DIR = PROJECT_ROOT / "uploads"  # in .gitignore
@@ -54,10 +54,14 @@ def setup(templates, get_conn, int_or):
 
     # ---------- upload ----------
 
+    def own_candidates(request, conn) -> list[dict]:
+        """This student's resumes (all of them for the admin, or locally)."""
+        return db.list_candidates(conn, None if auth.is_admin(request) else auth.user_id(request))
+
     @router.get("/match")
     def match_home(request: Request, conn=Depends(get_conn)):
         candidates = []
-        for c in db.list_candidates(conn):
+        for c in own_candidates(request, conn):
             p = CandidateProfile.model_validate_json(c["profile_json"])
             candidates.append({**c, "p": p})
         return render(request, "match_home.html", candidates=candidates, llm_on=bool(config.GEMINI_API_KEY))
@@ -75,13 +79,17 @@ def setup(templates, get_conn, int_or):
             error = "That file is over 5 MB. Export a smaller PDF."
         elif not data.startswith(b"%PDF" if suffix == "pdf" else b"PK"):  # check the content, not just the name
             error = f"That doesn't look like a real .{suffix} file."
-        if error:
-            return render(request, "match_home.html", candidates=[], error=error, llm_on=bool(config.GEMINI_API_KEY))
+        from ..matching.resume import resume_key
 
-        digest = hashlib.sha256(data).hexdigest()
-        existing = db.get_candidate_by_hash(conn, digest)
+        digest = resume_key(data, auth.user_id(request))
+        existing = None if error else db.get_candidate_by_hash(conn, digest)
         if existing:  # same file parsed before: no need to send anything again
             return RedirectResponse(f"/match/candidates/{existing['id']}", status_code=303)
+        if not error and not auth.is_admin(request) and \
+                len(own_candidates(request, conn)) >= config.MAX_RESUMES_PER_USER:
+            error = f"You already have {config.MAX_RESUMES_PER_USER} resumes here. Delete one first (on its page)."
+        if error:
+            return render(request, "match_home.html", candidates=[], error=error, llm_on=bool(config.GEMINI_API_KEY))
 
         file_id = f"{digest[:16]}.{suffix}"
         UPLOAD_DIR.mkdir(exist_ok=True)
@@ -94,7 +102,8 @@ def setup(templates, get_conn, int_or):
                       llm_on=bool(config.GEMINI_API_KEY))
 
     @router.post("/match/parse")
-    async def match_parse(file_id: str = Form(...), name: str = Form(...), grad_year: str = Form(...)):
+    async def match_parse(request: Request, file_id: str = Form(...), name: str = Form(...),
+                          grad_year: str = Form(...)):
         name = " ".join(name.split())
         year = int_or(grad_year, None, 2000, 2040)
         if not FILE_ID.match(file_id) or not (UPLOAD_DIR / file_id).is_file():
@@ -105,17 +114,19 @@ def setup(templates, get_conn, int_or):
             raise HTTPException(400, "Graduation year should look like 2028.")
         if not config.GEMINI_API_KEY:
             raise HTTPException(400, "Parsing needs a free GEMINI_API_KEY in .env (see README).")
-        args = ["parse-resume", f"uploads/{file_id}", f"--name={name}", "--grad-year", str(year)]
-        start_task("Parse resume", [args])
+        args = ["parse-resume", f"uploads/{file_id}", f"--name={name}", "--grad-year", str(year), "--delete-file"]
+        if auth.user_id(request):
+            args += ["--user", str(auth.user_id(request))]
+        start_task("Parse resume", [args], auth.user_id(request))
         return RedirectResponse(f"/match/task?next=/match/resume/{file_id}", status_code=303)
 
     @router.get("/match/resume/{file_id}")
-    def match_resume_done(file_id: str, conn=Depends(get_conn)):
-        """Where the parse task jumps when it's done: find the candidate made from this file."""
-        path = UPLOAD_DIR / file_id
-        if not FILE_ID.match(file_id) or not path.is_file():
+    def match_resume_done(request: Request, file_id: str, conn=Depends(get_conn)):
+        """Where the parse task jumps when it's done: find the candidate made from this file (the file
+        itself is already deleted; its name is the start of the resume's hash)."""
+        if not FILE_ID.match(file_id):
             raise HTTPException(404, "Unknown upload")
-        row = db.get_candidate_by_hash(conn, hashlib.sha256(path.read_bytes()).hexdigest())
+        row = db.get_candidate_by_hash_prefix(conn, file_id[:16], auth.user_id(request))
         if row is None:
             raise HTTPException(404, "This resume isn't parsed yet. Check the task log.")
         return RedirectResponse(f"/match/candidates/{row['id']}", status_code=303)
@@ -152,8 +163,26 @@ def setup(templates, get_conn, int_or):
         args = build_match_args(candidate_id, form, int_or)
         if "--no-rerank" not in args and not config.GEMINI_API_KEY:
             raise HTTPException(400, "The LLM rerank needs a GEMINI_API_KEY; tick 'quick mode' instead.")
-        start_task("Match", [args])
+        uid = auth.user_id(request)
+        if uid and not auth.is_admin(request):  # the shared free Gemini key: a fair share per student
+            from ..outreach.run import start_of_today
+
+            if db.user_match_runs_since(conn, uid, start_of_today()) >= config.MAX_MATCH_RUNS_PER_DAY:
+                raise HTTPException(429, f"That's {config.MAX_MATCH_RUNS_PER_DAY} match runs today, the daily "
+                                         "limit. Your shortlists are saved; try again tomorrow.")
+        start_task("Match", [args], uid)
         return RedirectResponse(f"/match/task?next=/match/candidates/{candidate_id}/latest", status_code=303)
+
+    @router.post("/match/candidates/{candidate_id}/forget")
+    async def candidate_forget(candidate_id: int, conn=Depends(get_conn)):
+        """Delete this resume and everything made from it (runs, drafts, outreach)."""
+        from .runner import run_now
+
+        load_candidate(conn, candidate_id)
+        code, out = await run_now(["forget", "--candidate", str(candidate_id), "--yes"])
+        if code != 0:
+            raise HTTPException(500, "Could not delete it: " + (out.strip().splitlines() or ["?"])[-1][:200])
+        return RedirectResponse("/match", status_code=303)
 
     @router.get("/match/candidates/{candidate_id}/latest")
     def candidate_latest(candidate_id: int, conn=Depends(get_conn)):
@@ -205,31 +234,36 @@ def setup(templates, get_conn, int_or):
         nxt = request.query_params.get("next", "/match")
         if not re.match(r"^/match/[\w./-]*$", nxt):  # only jump to our own pages
             nxt = "/match"
-        return render(request, "match_task.html", task=match_task(), next=nxt)
+        return render(request, "match_task.html", task=match_task(request), next=nxt)
 
     @router.get("/match/task.json")
-    def task_json():
+    def task_json(request: Request):
         """What the progress page polls. Without the admin password we only show Match tasks."""
-        return {"busy": runner.busy, "task": match_task()}
+        return {"busy": runner.busy, "task": match_task(request)}
 
     @router.post("/match/stop")
-    async def task_stop():
-        if match_task() and runner.busy:  # can't stop an admin crawl from here
+    async def task_stop(request: Request):
+        if match_task(request) and runner.busy:  # can't stop an admin crawl (or another student's task)
             await runner.stop()
         return RedirectResponse("/match/task", status_code=303)
 
     return router
 
 
-def match_task() -> dict | None:
-    """The current runner task, only if it's one of ours."""
+def match_task(request: Request) -> dict | None:
+    """The current runner task, only if it's a Match task AND (hosted) this student's own: its log
+    shows their profile and companies."""
     t = runner.current
-    return t.to_dict() if t and t.title in MATCH_TASKS else None
+    if not t or t.title not in MATCH_TASKS:
+        return None
+    if config.LOGIN_REQUIRED and not auth.is_admin(request) and t.owner != auth.user_id(request):
+        return None
+    return t.to_dict()
 
 
-def start_task(title: str, commands: list[list[str]]) -> None:
+def start_task(title: str, commands: list[list[str]], owner: int | None = None) -> None:
     try:
-        runner.start(title, commands)
+        runner.start(title, commands, owner)
     except RuntimeError as e:
         raise HTTPException(409, str(e))
 

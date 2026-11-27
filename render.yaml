@@ -1,0 +1,25 @@
+# Render Blueprint: one FREE web service. The database is Neon (free), not Render.
+# Render -> New -> Blueprint -> pick this repo. It asks for the values marked sync: false.
+services:
+  - type: web
+    name: sort-sherr
+    runtime: python
+    plan: free  # sleeps after 15 min idle; no disk (everything lives in Neon)
+    region: singapore  # closest to India; create the Neon project in AWS Singapore too (same region = fast)
+    # -e: the code stays in the repo folder, where the runner and the model cache expect it.
+    # The embedding model (~64 MB) is downloaded here, once per deploy, not on every wake-up.
+    buildCommand: pip install -e ".[deploy]" && python -m sort_sherr.cli embed-companies --download-only
+    # --proxy-headers: Render serves https in front of us; links (e.g. invites) must say https too
+    startCommand: uvicorn sort_sherr.web.app:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips "*"
+    healthCheckPath: /healthz
+    envVars:
+      - key: DATABASE_URL  # Neon -> Connection details -> the POOLED connection string
+        sync: false
+      - key: GEMINI_API_KEY  # free key from https://aistudio.google.com/apikey
+        sync: false
+      - key: SORT_SHERR_SESSION_SECRET  # signs the login cookie; Render makes a random one
+        generateValue: true
+      - key: SORT_SHERR_EMBEDDER  # bge-small without torch: fits in 512 MB
+        value: fastembed
+      - key: SORT_SHERR_REFRESH_URL  # optional: your GitHub Actions refresh page, linked from /admin
+        sync: false

@@ -63,8 +63,15 @@ def _docx_text(path: Path) -> tuple[str, list[str]]:
     return "\n".join(lines), links
 
 
-def file_hash(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def file_hash(path: Path, user_id: int | None = None) -> str:
+    """The resume's cache key. On the hosted site the student's id is part of it, so two students
+    never share a parsed resume (and one can't find another's by uploading the same file)."""
+    return resume_key(path.read_bytes(), user_id)
+
+
+def resume_key(data: bytes, user_id: int | None = None) -> str:
+    prefix = f"user{user_id}:".encode() if user_id is not None else b""  # None = local use: plain hash
+    return hashlib.sha256(prefix + data).hexdigest()
 
 
 # ---------- redaction (runs locally, before anything is sent to the LLM) ----------
@@ -243,9 +250,10 @@ def build_profile(parsed: ParsedResume, pii: dict) -> CandidateProfile:
     return profile
 
 
-async def parse_resume(conn, provider, path: Path, name: str | None = None) -> tuple[int, CandidateProfile, bool]:
-    """Returns (candidate_id, profile, was_cached)."""
-    resume_hash = file_hash(path)
+async def parse_resume(conn, provider, path: Path, name: str | None = None,
+                       user_id: int | None = None) -> tuple[int, CandidateProfile, bool]:
+    """Returns (candidate_id, profile, was_cached). user_id: the student it belongs to (hosted site)."""
+    resume_hash = file_hash(path, user_id)
     saved = db.get_candidate_by_hash(conn, resume_hash)
     if saved:
         return saved["id"], CandidateProfile.model_validate_json(saved["profile_json"]), True
@@ -266,5 +274,5 @@ async def parse_resume(conn, provider, path: Path, name: str | None = None) -> t
     parsed, _usage = await provider.generate(PROMPT.format(text=redacted), ParsedResume)
     profile = build_profile(parsed, pii)
     model = getattr(provider, "model", "unknown")
-    candidate_id = db.save_candidate(conn, resume_hash, profile.model_dump_json(), json.dumps(pii), model)
+    candidate_id = db.save_candidate(conn, resume_hash, profile.model_dump_json(), json.dumps(pii), model, user_id)
     return candidate_id, profile, False

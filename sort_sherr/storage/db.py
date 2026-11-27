@@ -1,4 +1,12 @@
-"""All database code lives here (plain sqlite3, portable SQL so Postgres is an easy swap later).
+"""All database code lives here. Two backends, one set of SQL:
+
+  - SQLite (a local file, or ":memory:" in tests): the default, nothing to install
+  - Postgres (e.g. a free Neon database, for the hosted website): when the target is a
+    postgresql://... URL (config.DB_PATH = DATABASE_URL)
+
+SQL is written once, with ? placeholders and features both databases support (ON CONFLICT,
+RETURNING, NULLS LAST: Postgres sorts NULL first in DESC order, SQLite last, so say it). PgConnection below makes a Postgres connection behave like sqlite3's: ? -> %s,
+rows readable as row[0] and row["name"], `with conn:` = one transaction.
 
 Lists (tags, locations, sources) are stored as JSON text. Datetimes as ISO text.
 """
@@ -245,16 +253,144 @@ CREATE TABLE IF NOT EXISTS outreach_events (
     scheduled_for TEXT
 );
 CREATE INDEX IF NOT EXISTS events_by_outreach ON outreach_events (outreach_id, at);
+
+-- ----- hosting: student accounts (invite-only: there is no email-sending code, so no email sign-up) -----
+
+-- password_hash = "scrypt$<salt hex>$<hash hex>" (web/auth.py); the password itself is never stored.
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    is_admin INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+-- One-time links made by the admin: a new account, or (for_user_id set) a password reset.
+-- Only a hash of the code is stored, so a copy of the database can't be used to sign up.
+CREATE TABLE IF NOT EXISTS invites (
+    code_hash TEXT PRIMARY KEY,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    for_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    used_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    used_at TEXT
+);
 """
 
 LIST_FIELDS = ("sources", "locations", "tags")
+
+# A broken rule (CHECK, UNIQUE, FOREIGN KEY) raises one of these, depending on the database.
+try:
+    import psycopg
+
+    INTEGRITY_ERRORS = (sqlite3.IntegrityError, psycopg.IntegrityError)
+except ImportError:  # psycopg is only needed for Postgres
+    INTEGRITY_ERRORS = (sqlite3.IntegrityError,)
 
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def connect(path: Path | str) -> sqlite3.Connection:
+# ---------- connecting (SQLite or Postgres) ----------
+
+
+def is_postgres(target) -> bool:
+    return str(target).startswith(("postgres://", "postgresql://"))
+
+
+class Row:
+    """A Postgres row that reads like sqlite3.Row: row[0], row["name"], dict(row), tuple(row)."""
+
+    __slots__ = ("_index", "_values")
+
+    def __init__(self, index: dict[str, int], values):
+        self._index, self._values = index, values
+
+    def __getitem__(self, key):
+        return self._values[key if isinstance(key, int) else self._index[key]]
+
+    def keys(self):
+        return list(self._index)
+
+    def __iter__(self):
+        return iter(self._values)
+
+    def __len__(self):
+        return len(self._values)
+
+
+def _pg_rows(cursor):
+    """psycopg row factory: build the name -> position map once per query."""
+    index = {d.name: i for i, d in enumerate(cursor.description or [])}
+    return lambda values: Row(index, values)
+
+
+def _pg_sql(sql: str, params) -> str:
+    """sqlite's ? placeholders -> psycopg's %s. With parameters, a literal % must be written %%."""
+    return sql.replace("%", "%%").replace("?", "%s") if params else sql
+
+
+def _pg_params(params):
+    # Our booleans live in INTEGER columns (1/0, NULL = unknown); Postgres won't put True in an INTEGER.
+    return [int(p) if isinstance(p, bool) else p for p in params]
+
+
+class PgConnection:
+    """Just enough of the sqlite3.Connection interface for this file, on top of psycopg 3.
+    autocommit: every statement is saved at once (no transaction left open while a crawl waits on
+    the network); `with conn:` groups several statements into one transaction."""
+
+    def __init__(self, url: str, schema: str | None = None):
+        import psycopg
+
+        options = f"-c search_path={schema}" if schema else None  # tests use one schema per database
+        self.raw = psycopg.connect(url, autocommit=True, row_factory=_pg_rows, options=options or "")
+        self._tx = None
+
+    def execute(self, sql: str, params=()):
+        cur = self.raw.cursor()
+        cur.execute(_pg_sql(sql, params), _pg_params(params) if params else None)
+        return cur
+
+    def executemany(self, sql: str, rows):
+        rows = [_pg_params(r) for r in rows]
+        cur = self.raw.cursor()
+        if rows:
+            cur.executemany(_pg_sql(sql, rows[0]), rows)
+        return cur
+
+    def commit(self):  # autocommit: already saved
+        pass
+
+    def close(self):
+        self.raw.close()
+
+    def __enter__(self):
+        self._tx = self.raw.transaction()
+        self._tx.__enter__()
+        return self
+
+    def __exit__(self, *exc):
+        tx, self._tx = self._tx, None
+        return tx.__exit__(*exc)
+
+
+def pg_schema(sql: str) -> str:
+    """The SQLite schema, in Postgres words: auto-numbered ids, BYTEA for bytes, double precision."""
+    sql = re.sub(r"\bid INTEGER PRIMARY KEY\b", "id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY", sql)
+    return sql.replace(" BLOB", " BYTEA").replace(" REAL", " DOUBLE PRECISION")
+
+
+def connect(path: Path | str, schema: str | None = None):
+    """A SQLite connection for a file path / ":memory:", a PgConnection for a postgresql:// URL.
+    Either way the tables exist and old databases are upgraded when it returns."""
+    if is_postgres(path):
+        conn = PgConnection(str(path), schema)
+        conn.raw.execute(pg_schema(SCHEMA))  # several statements, no parameters: allowed by psycopg
+        add_missing_columns(conn)
+        migrate_contacted(conn)
+        return conn
     if str(path) != ":memory:":
         Path(path).parent.mkdir(parents=True, exist_ok=True)
     # timeout: wait up to 30 s if another process (e.g. a crawl started from the admin page) is writing
@@ -278,13 +414,22 @@ NEW_COLUMNS = [
     # Part 4: a follow-up draft belongs to an outreach thread; 0 = the first email
     ("email_drafts", "outreach_id", "INTEGER REFERENCES outreach(id) ON DELETE CASCADE"),
     ("email_drafts", "followup_number", "INTEGER NOT NULL DEFAULT 0"),
+    # hosting: whose resume this is (NULL = the local single-user setup)
+    ("candidate_profiles", "user_id", "INTEGER REFERENCES users(id) ON DELETE CASCADE"),
 ]
+
+
+def table_columns(conn, table: str) -> set[str]:
+    if isinstance(conn, PgConnection):
+        rows = conn.execute("SELECT column_name FROM information_schema.columns "
+                            "WHERE table_name = ? AND table_schema = current_schema()", (table,))
+        return {r[0] for r in rows}
+    return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
 
 
 def add_missing_columns(conn) -> None:
     for table, column, sql_type in NEW_COLUMNS:
-        have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
-        if column not in have:
+        if column not in table_columns(conn, table):
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
     conn.commit()
 
@@ -292,7 +437,7 @@ def add_missing_columns(conn) -> None:
 # ---------- companies ----------
 
 
-def row_to_company(row: sqlite3.Row) -> Company:
+def row_to_company(row) -> Company:
     data = dict(row)
     for f in LIST_FIELDS:
         data[f] = json.loads(data[f] or "[]")
@@ -341,8 +486,8 @@ def upsert_company(conn, new: Company) -> int:
         company_id = old.id
     else:
         marks = ", ".join("?" for _ in cols)
-        cur = conn.execute(f"INSERT INTO companies ({', '.join(cols)}) VALUES ({marks})", list(data.values()))
-        company_id = cur.lastrowid
+        company_id = conn.execute(f"INSERT INTO companies ({', '.join(cols)}) VALUES ({marks}) RETURNING id",
+                                  list(data.values())).fetchone()[0]
     conn.commit()
     return company_id
 
@@ -441,7 +586,8 @@ def cache_get(conn, content_hash: str) -> list[JobDraft] | None:
 def cache_put(conn, content_hash: str, jobs: list[JobDraft]) -> None:
     payload = json.dumps([j.model_dump(mode="json") for j in jobs])
     conn.execute(
-        "INSERT OR REPLACE INTO llm_cache (content_hash, jobs_json, created_at) VALUES (?, ?, ?)",
+        "INSERT INTO llm_cache (content_hash, jobs_json, created_at) VALUES (?, ?, ?) "
+        "ON CONFLICT (content_hash) DO UPDATE SET jobs_json = excluded.jobs_json, created_at = excluded.created_at",
         (content_hash, payload, now()),
     )
     conn.commit()
@@ -450,13 +596,25 @@ def cache_put(conn, content_hash: str, jobs: list[JobDraft]) -> None:
 # ---------- Part 2: candidates ----------
 
 
-def save_candidate(conn, resume_hash: str, profile_json: str, pii_json: str, model: str) -> int:
-    cur = conn.execute(
-        "INSERT INTO candidate_profiles (resume_hash, profile_json, pii_json, model, created_at) VALUES (?, ?, ?, ?, ?)",
-        (resume_hash, profile_json, pii_json, model, now()),
-    )
+def save_candidate(conn, resume_hash: str, profile_json: str, pii_json: str, model: str,
+                   user_id: int | None = None) -> int:
+    candidate_id = conn.execute(
+        "INSERT INTO candidate_profiles (resume_hash, profile_json, pii_json, model, created_at, user_id) "
+        "VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+        (resume_hash, profile_json, pii_json, model, now(), user_id),
+    ).fetchone()[0]
     conn.commit()
-    return cur.lastrowid
+    return candidate_id
+
+
+def get_candidate_by_hash_prefix(conn, prefix: str, user_id: int | None) -> dict | None:
+    """The upload page names files by the first 16 hex characters of the resume's hash."""
+    row = conn.execute(
+        "SELECT * FROM candidate_profiles WHERE resume_hash LIKE ? AND "
+        + ("user_id = ?" if user_id is not None else "user_id IS NULL"),
+        (prefix + "%", *([user_id] if user_id is not None else [])),
+    ).fetchone()
+    return dict(row) if row else None
 
 
 def get_candidate_by_hash(conn, resume_hash: str) -> dict | None:
@@ -496,7 +654,7 @@ def matching_companies(conn) -> list[dict]:
     by_id = {c["id"]: c for c in companies}
     for job in conn.execute(
         "SELECT id, company_id, title, team, location, remote, is_internship, employment_type, requirements, "
-        "description, apply_url FROM jobs WHERE is_active = 1 ORDER BY company_id, is_internship DESC, id"
+        "description, apply_url FROM jobs WHERE is_active = 1 ORDER BY company_id, is_internship DESC NULLS LAST, id"
     ):
         if job["company_id"] in by_id:
             by_id[job["company_id"]]["jobs"].append(dict(job))
@@ -521,7 +679,8 @@ def get_embeddings(conn, hashes: list[str], model: str) -> dict[str, bytes]:
 
 def put_embeddings(conn, rows: list[tuple[str, bytes]], model: str) -> None:
     conn.executemany(
-        "INSERT OR REPLACE INTO embeddings (content_hash, model, vector) VALUES (?, ?, ?)",
+        "INSERT INTO embeddings (content_hash, model, vector) VALUES (?, ?, ?) "
+        "ON CONFLICT (content_hash, model) DO UPDATE SET vector = excluded.vector",
         [(h, model, v) for h, v in rows],
     )
     conn.commit()
@@ -534,7 +693,8 @@ def rerank_cache_get(conn, key: str) -> str | None:
 
 def rerank_cache_put(conn, key: str, result_json: str) -> None:
     conn.execute(
-        "INSERT OR REPLACE INTO rerank_cache (cache_key, result_json, created_at) VALUES (?, ?, ?)",
+        "INSERT INTO rerank_cache (cache_key, result_json, created_at) VALUES (?, ?, ?) "
+        "ON CONFLICT (cache_key) DO UPDATE SET result_json = excluded.result_json, created_at = excluded.created_at",
         (key, result_json, now()),
     )
     conn.commit()
@@ -548,11 +708,10 @@ def save_match_run(conn, candidate_id: int, run: dict, matches: list[dict]) -> i
     output_tokens, cost_usd. matches: one dict per company in the pool."""
     ts = now()
     cols = ["candidate_id", *run, "created_at"]
-    cur = conn.execute(
-        f"INSERT INTO match_runs ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})",
+    run_id = conn.execute(
+        f"INSERT INTO match_runs ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)}) RETURNING id",
         [candidate_id, *run.values(), ts],
-    )
-    run_id = cur.lastrowid
+    ).fetchone()[0]
     for m in matches:
         mcols = ["run_id", "candidate_id", *m, "created_at"]
         conn.execute(
@@ -578,8 +737,8 @@ def run_matches(conn, run_id: int, order: str = "final") -> list[dict]:
     """All matches of a run, joined with company name + best job title.
     order: "final" (reranked ranking) or "retrieval" (embedding similarity only)."""
     order_sql = {
-        "final": "m.final_score DESC, m.retrieval_score DESC",
-        "retrieval": "m.retrieval_score DESC",
+        "final": "m.final_score DESC NULLS LAST, m.retrieval_score DESC NULLS LAST",
+        "retrieval": "m.retrieval_score DESC NULLS LAST",
     }[order]
     rows = conn.execute(
         "SELECT m.*, c.name AS company_name, c.website, c.yc_batch, c.careers_url, c.description, c.team_size, "
@@ -597,11 +756,15 @@ def run_matches(conn, run_id: int, order: str = "final") -> list[dict]:
     return out
 
 
-def list_candidates(conn) -> list[dict]:
-    """Parsed resumes, newest first (profile only; pii_json is not needed for listing)."""
+def list_candidates(conn, user_id: int | None = None) -> list[dict]:
+    """Parsed resumes, newest first (profile only; pii_json is not needed for listing).
+    user_id: only this student's (the hosted site); None = all (local use, or the admin)."""
+    where, params = ("WHERE p.user_id = ? ", (user_id,)) if user_id is not None else ("", ())
     rows = conn.execute(
-        "SELECT p.id, p.profile_json, p.created_at, count(r.id) AS runs FROM candidate_profiles p "
-        "LEFT JOIN match_runs r ON r.candidate_id = p.id GROUP BY p.id, p.profile_json, p.created_at ORDER BY p.id DESC"
+        "SELECT p.id, p.profile_json, p.created_at, p.user_id, count(r.id) AS runs FROM candidate_profiles p "
+        f"LEFT JOIN match_runs r ON r.candidate_id = p.id {where}"
+        "GROUP BY p.id, p.profile_json, p.created_at, p.user_id ORDER BY p.id DESC",
+        params,
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -703,11 +866,12 @@ def save_draft(conn, draft: dict) -> int:
     JSON list fields (facts_used, student_items_used, check_notes, lint_flags) as Python lists."""
     data = {k: (json.dumps(v, ensure_ascii=False) if k in DRAFT_JSON_FIELDS else v) for k, v in draft.items()}
     cols = [*data, "created_at"]
-    cur = conn.execute(
-        f"INSERT INTO email_drafts ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})", [*data.values(), now()]
-    )
+    draft_id = conn.execute(
+        f"INSERT INTO email_drafts ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)}) RETURNING id",
+        [*data.values(), now()],
+    ).fetchone()[0]
     conn.commit()
-    return cur.lastrowid
+    return draft_id
 
 
 def _draft_row(r) -> dict:
@@ -794,13 +958,13 @@ def migrate_contacted(conn) -> None:
         "(SELECT 1 FROM outreach o WHERE o.candidate_id = k.candidate_id AND o.company_id = k.company_id)"
     ).fetchall()
     for r in rows:
-        cur = conn.execute(
-            "INSERT INTO outreach (candidate_id, company_id, status, created_at) VALUES (?, ?, 'sent', ?)",
+        oid = conn.execute(
+            "INSERT INTO outreach (candidate_id, company_id, status, created_at) VALUES (?, ?, 'sent', ?) RETURNING id",
             (r["candidate_id"], r["company_id"], r["contacted_at"]),
-        )
+        ).fetchone()[0]
         conn.execute(
             "INSERT INTO outreach_events (outreach_id, kind, at, note, source) VALUES (?, 'sent', ?, ?, 'migrated')",
-            (cur.lastrowid, r["contacted_at"], r["note"]),
+            (oid, r["contacted_at"], r["note"]),
         )
     conn.commit()
 
@@ -820,9 +984,10 @@ def ensure_outreach(conn, candidate_id: int, company_id: int, draft_id: int | No
     if oid is None:
         ts = now()
         oid = conn.execute(
-            "INSERT INTO outreach (candidate_id, company_id, draft_id, contact_id, created_at) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO outreach (candidate_id, company_id, draft_id, contact_id, created_at) VALUES (?, ?, ?, ?, ?) "
+            "RETURNING id",
             (candidate_id, company_id, draft_id, contact_id, ts),
-        ).lastrowid
+        ).fetchone()[0]
         conn.execute("INSERT INTO outreach_events (outreach_id, kind, at) VALUES (?, 'drafted', ?)", (oid, ts))
     else:
         conn.execute(
@@ -844,9 +1009,9 @@ def record_event(conn, outreach_id: int, kind: str, at: str, *, note: str | None
     with conn:  # commits both statements together, or neither
         event_id = conn.execute(
             "INSERT INTO outreach_events (outreach_id, kind, at, note, source, followup_number, scheduled_for) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
             (outreach_id, kind, at, note, source, followup_number, scheduled_for),
-        ).lastrowid
+        ).fetchone()[0]
         if updates:
             sets = ", ".join(f"{k} = ?" for k in updates)
             conn.execute(f"UPDATE outreach SET {sets} WHERE id = ?", [*updates.values(), outreach_id])
@@ -974,6 +1139,127 @@ def log_outreach_run(conn, kind: str, candidate_id: int | None, usage: dict, cos
     conn.commit()
 
 
+# ---------- hosting: users, invites, per-student limits ----------
+
+
+def create_user(conn, username: str, password_hash: str, is_admin: bool = False) -> int:
+    user_id = conn.execute(
+        "INSERT INTO users (username, password_hash, is_admin, created_at) VALUES (?, ?, ?, ?) RETURNING id",
+        (username, password_hash, int(is_admin), now()),
+    ).fetchone()[0]
+    conn.commit()
+    return user_id
+
+
+def get_user(conn, user_id) -> dict | None:
+    row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone() if user_id else None
+    return dict(row) if row else None
+
+
+def get_user_by_name(conn, username: str) -> dict | None:
+    row = conn.execute("SELECT * FROM users WHERE lower(username) = lower(?)", (username,)).fetchone()
+    return dict(row) if row else None
+
+
+def set_password(conn, user_id: int, password_hash: str) -> None:
+    conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (password_hash, user_id))
+    conn.commit()
+
+
+def list_users(conn) -> list[dict]:
+    rows = conn.execute(
+        "SELECT u.id, u.username, u.is_admin, u.created_at, count(p.id) AS resumes FROM users u "
+        "LEFT JOIN candidate_profiles p ON p.user_id = u.id "
+        "GROUP BY u.id, u.username, u.is_admin, u.created_at ORDER BY u.id"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def create_invite(conn, code_hash: str, created_by: int | None, for_user_id: int | None = None) -> None:
+    conn.execute(
+        "INSERT INTO invites (code_hash, created_by, for_user_id, created_at) VALUES (?, ?, ?, ?)",
+        (code_hash, created_by, for_user_id, now()),
+    )
+    conn.commit()
+
+
+def get_invite(conn, code_hash: str) -> dict | None:
+    """An UNUSED invite with this code, or None."""
+    row = conn.execute("SELECT * FROM invites WHERE code_hash = ? AND used_at IS NULL", (code_hash,)).fetchone()
+    return dict(row) if row else None
+
+
+def use_invite(conn, code_hash: str, user_id: int) -> None:
+    conn.execute("UPDATE invites SET used_by = ?, used_at = ? WHERE code_hash = ?", (user_id, now(), code_hash))
+    conn.commit()
+
+
+def last_crawl(conn) -> str | None:
+    return conn.execute("SELECT max(last_crawled_at) FROM companies").fetchone()[0]
+
+
+def open_invites(conn) -> int:
+    return conn.execute("SELECT count(*) FROM invites WHERE used_at IS NULL").fetchone()[0]
+
+
+def user_match_runs_since(conn, user_id: int, since_iso: str) -> int:
+    """Match runs of all this student's resumes since a time (for the daily limit)."""
+    row = conn.execute(
+        "SELECT count(*) FROM match_runs r JOIN candidate_profiles p ON p.id = r.candidate_id "
+        "WHERE p.user_id = ? AND r.created_at >= ?",
+        (user_id, since_iso),
+    ).fetchone()
+    return row[0]
+
+
+def forget_candidate(conn, candidate_id: int) -> None:
+    """Delete one resume and everything made from it: match runs, drafts, outreach (a student's
+    "delete my data"). Public company data is untouched."""
+    with conn:
+        conn.execute("DELETE FROM outreach WHERE candidate_id = ?", (candidate_id,))
+        conn.execute("DELETE FROM email_drafts WHERE candidate_id = ?", (candidate_id,))
+        conn.execute("DELETE FROM contacted WHERE candidate_id = ?", (candidate_id,))
+        conn.execute("DELETE FROM outreach_runs WHERE candidate_id = ?", (candidate_id,))
+        conn.execute("DELETE FROM matches WHERE candidate_id = ?", (candidate_id,))
+        conn.execute("DELETE FROM match_runs WHERE candidate_id = ?", (candidate_id,))
+        conn.execute("DELETE FROM candidate_profiles WHERE id = ?", (candidate_id,))
+
+
+# ---------- copying a whole database (SQLite file -> Postgres, once) ----------
+
+# Parents before children, so every foreign key finds its row. email_drafts and outreach point at
+# each other: drafts are copied first without outreach_id, which is filled in after outreach.
+TABLES = ["users", "invites", "companies", "jobs", "llm_cache", "candidate_profiles", "match_runs", "matches", "embeddings",
+          "rerank_cache", "company_briefs", "contacts", "forgotten_contacts", "email_drafts", "contacted",
+          "outreach_runs", "outreach", "outreach_events"]
+
+
+def copy_database(src, dst, progress=print) -> dict[str, int]:
+    """Copy every row from src to dst, keeping ids. Safe to run again: rows already there are skipped.
+    Returns {table: rows in src}."""
+    counts = {}
+    for table in TABLES:
+        cols = sorted(table_columns(src, table) & table_columns(dst, table))
+        rows = [tuple(r[c] for c in cols) for r in src.execute(f"SELECT {', '.join(cols)} FROM {table}")]
+        if table == "email_drafts":  # second pass below
+            later = [(r[cols.index("outreach_id")], r[cols.index("id")]) for r in rows if r[cols.index("outreach_id")]]
+            rows = [tuple(None if c == "outreach_id" else v for c, v in zip(cols, r)) for r in rows]
+        insert = f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)}) ON CONFLICT DO NOTHING"
+        for i in range(0, len(rows), 1000):
+            dst.executemany(insert, rows[i : i + 1000])
+        dst.commit()
+        counts[table] = len(rows)
+        progress(f"  {table:<20} {len(rows):>7} rows")
+    dst.executemany("UPDATE email_drafts SET outreach_id = ? WHERE id = ?", later)
+    if isinstance(dst, PgConnection):  # new rows must get ids after the copied ones
+        for table in TABLES:
+            if "id" in table_columns(dst, table):
+                dst.execute(f"SELECT setval(pg_get_serial_sequence('{table}', 'id'), "
+                            f"(SELECT coalesce(max(id), 0) + 1 FROM {table}), false)")
+    dst.commit()
+    return counts
+
+
 # ---------- queries for the web app (read-only) ----------
 
 JOB_SORTS = {
@@ -986,7 +1272,7 @@ COMPANY_SORTS = {
     "jobs": "active_jobs DESC, c.quality_score DESC",
     "interns": "internships DESC, active_jobs DESC",
     "name": "lower(c.name)",
-    "batch": "c.yc_batch DESC",
+    "batch": "c.yc_batch DESC NULLS LAST",
 }
 
 
@@ -997,8 +1283,8 @@ def search_jobs(
     """Active jobs joined with their company. Returns (rows for this page, total matching)."""
     where, params = ["j.is_active = 1", "c.quality_score >= ?"], [min_score]
     if q:
-        where.append("(j.title LIKE ? OR c.name LIKE ? OR j.location LIKE ? OR j.team LIKE ?)")
-        params += [f"%{q}%"] * 4
+        where.append("(lower(j.title) LIKE ? OR lower(c.name) LIKE ? OR lower(j.location) LIKE ? OR lower(j.team) LIKE ?)")
+        params += [f"%{q.lower()}%"] * 4
     if internship:
         where.append("j.is_internship = 1")
     if remote == "remote":
@@ -1029,13 +1315,13 @@ def search_companies(
 ) -> tuple[list[dict], int]:
     """Companies with their active job + internship counts. Returns (rows, total)."""
     counts = (
-        "SELECT company_id, count(*) AS active_jobs, sum(is_internship = 1) AS internships "
+        "SELECT company_id, count(*) AS active_jobs, sum(CASE WHEN is_internship = 1 THEN 1 ELSE 0 END) AS internships "
         "FROM jobs WHERE is_active = 1 GROUP BY company_id"
     )
     where, params = ["c.quality_score >= ?"], [min_score]
     if q:
-        where.append("(c.name LIKE ? OR c.description LIKE ? OR c.tags LIKE ?)")
-        params += [f"%{q}%"] * 3
+        where.append("(lower(c.name) LIKE ? OR lower(c.description) LIKE ? OR lower(c.tags) LIKE ?)")
+        params += [f"%{q.lower()}%"] * 3
     if source:
         where.append("c.sources LIKE ?")
         params.append(f'%"{source}"%')

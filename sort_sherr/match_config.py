@@ -4,6 +4,7 @@ import os
 
 # ---------- retrieval (cheap, local embeddings) ----------
 EMBED_MODEL = os.getenv("SORT_SHERR_EMBED_MODEL", "BAAI/bge-small-en-v1.5")  # free, local, 384-dim
+EMBEDDER = os.getenv("SORT_SHERR_EMBEDDER", "sentence-transformers")  # or "fastembed" (no torch: the hosted site)
 TOP_K_RESUME = 75  # companies kept by resume similarity (at least; grows with the shortlist size)
 POOL_FACTOR = 1.5  # rerank 1.5x the shortlist, so the LLM can push weak ones out (shortlist 100 -> pool 150)
 MAX_POOL = 300  # cap: 300 companies = 60 LLM calls (~8-10 min on the free tier)

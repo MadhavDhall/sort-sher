@@ -10,6 +10,9 @@ YC-backed and recently funded ones. The pipeline has four parts:
 
 **Principle: quality over quantity. This is NOT a spam tool.**
 
+It runs locally (SQLite, one user, no login) or hosted for other students (Render free + Neon Postgres +
+GitHub Actions, invite-only accounts): see "Hosting" at the end.
+
 ## The owner is a student
 
 They want to understand every part of the code. Keep it simple and readable. Don't over-engineer
@@ -23,7 +26,7 @@ or add abstractions "for later". Prefer plain functions, short modules and a com
   - httpx (async) for HTTP
   - selectolax, using `from selectolax.lexbor import LexborHTMLParser` (the old `selectolax.parser` raises in 1.x)
   - Pydantic v2 for data models
-  - plain `sqlite3` for storage
+  - plain `sqlite3` for storage locally; Postgres (psycopg 3, a free Neon database) when `DATABASE_URL` is set
   - Typer for the CLI
   - pytest for tests
   - Playwright (`extractors/browser.py`): fallback when the plain page gives no jobs; renders JS + iframes
@@ -88,7 +91,8 @@ or add abstractions "for later". Prefer plain functions, short modules and a com
   they run the normal CLI commands as a subprocess via `web/runner.py` (one task at a time).
 - Every form/URL value must be validated (bounded ints, fixed choice lists). Never build shell
   strings; use `create_subprocess_exec` with an argument list.
-- Admin is open unless `SORT_SHERR_ADMIN_PASSWORD` is set. The server binds to 127.0.0.1.
+- Locally: admin is open unless `SORT_SHERR_ADMIN_PASSWORD` is set, and `serve` binds to 127.0.0.1 only.
+  Hosted (`LOGIN_REQUIRED`): every page needs a login and /admin needs an admin account (see Hosting).
 
 ## Tests
 
@@ -152,9 +156,10 @@ Part 2 tests use a made-up resume (`tests/fixtures/resume_fake.pdf/.docx`, rebui
   suggested roles (`matching/roles.py`, no LLM) → match form → results + CSV. Same rules as admin:
   read-only queries, writes go through `runner` running the CLI, all form values validated, free
   text passed as `--opt=value` (never parsed as a flag), uploads saved under a hash name.
-  **Match pages are open (owner's choice: no password)**; only `/admin` uses `require_admin`. So
-  Match has its own `/match/task.json` + `/match/stop` that only see/stop "Parse resume"/"Match"
-  tasks, never admin crawls. Safe only because the server binds to 127.0.0.1.
+  Locally the Match pages are open (owner's choice: no password; 127.0.0.1 only). Hosted, every
+  /match page requires a login and `auth.owner_guard` restricts it to the student's own data.
+  Match has its own `/match/task.json` + `/match/stop` that only see/stop Match tasks (hosted: only
+  the student's OWN task), never admin crawls.
 
 ## Part 3: research + drafts (`sort_sherr/outreach/`)
 
@@ -205,7 +210,7 @@ Part 2 tests use a made-up resume (`tests/fixtures/resume_fake.pdf/.docx`, rebui
   autouse fixture keeps Playwright off. Fixtures are trimmed real AfterQuery/YC/HN/GitHub responses; the Hunter
   fixture follows the docs' shape (no key was available).
 - `drafts/` is gitignored. Contacts and drafts are personal data and stay in the local DB.
-- Website: `web/draft_pages.py` (`/match/candidates/{cid}/drafts...`), open like /match (127.0.0.1 only).
+- Website: `web/draft_pages.py` (`/match/candidates/{cid}/drafts...`), same access rules as /match.
   - Writes go through the CLI. The long `draft` runs through `runner` as task "Draft emails" (a `MATCH_TASKS`
     entry, so /match/task can follow it). Quick ones (`approve-draft`, `mark-contacted`, `forget-contact`) use
     `runner.run_now`, which is exec with an argument list and a timeout.
@@ -252,7 +257,7 @@ Part 2 tests use a made-up resume (`tests/fixtures/resume_fake.pdf/.docx`, rebui
 - **`forget`:** `--company` deletes outreach (+events, follow-up drafts by cascade), drafts, contacts (to
   `forgotten_contacts`), `contacted` rows and `drafts/<slug>*.txt`; public company data stays. `--contact` deletes one
   value everywhere (outreach keeps its history with `contact_id` NULL).
-- **Website** (`web/outreach_pages.py`, open like /match): `/match/candidates/{cid}/outreach` (Today + table),
+- **Website** (`web/outreach_pages.py`, same access rules as /match): `/match/candidates/{cid}/outreach` (Today + table),
   `/outreach/stats` (+ `report.html`, `export.csv` built on request), `/outreach/{oid}` (timeline, reply/status forms
   with only allowed moves, follow-up drafts). Drafts page: "I sent it" posts `/drafts/{company}/sent`. Same rules as
   admin: read-only queries, writes via `run_now`/runner with argument lists, ids must belong to the candidate,
@@ -260,4 +265,47 @@ Part 2 tests use a made-up resume (`tests/fixtures/resume_fake.pdf/.docx`, rebui
 - Tests: `outreach_db` fixture (conftest), `test_tracker.py` (model, migration, FKs, CLI, forget), `test_followups.py`
   (dates at 12:00 UTC so any time zone works), `test_metrics.py` (rates, small n, report/CSV, follow-up drafts with a
   fake LLM, cap), `test_outreach_web.py` (pages + exact CLI args).
+
+## Hosting (Render free + Neon + GitHub Actions; $0/month)
+
+- **Owner's budget rule:** $50 of Render credits, never more, maybe shared with 1-2 other projects. So: Render
+  FREE web service (sleeps after 15 min, 512 MB, temporary disk), Neon FREE Postgres (one project per app, never
+  expires), GitHub Actions for heavy jobs. Never add a Render disk, Render Postgres or any paid service.
+- **Database** (`storage/db.py`): one set of SQL for both backends. `connect(path)` returns sqlite3 for a file /
+  `:memory:`, a `PgConnection` for a `postgresql://` URL (`config.DB_PATH = DATABASE_URL or SQLITE_PATH`).
+  Write SQL that both accept: `?` placeholders (turned into `%s`; a literal `%` is escaped when there are
+  params), `RETURNING id` (never `lastrowid`), `ON CONFLICT ... DO UPDATE/NOTHING` (never `INSERT OR REPLACE`),
+  `NULLS LAST` on any DESC sort of a nullable column, `lower(x) LIKE` for search, `CASE WHEN` instead of
+  boolean sums. Python bools are sent as 1/0 (INTEGER columns). PgConnection is autocommit; `with conn:`
+  is one transaction. `pg_schema()` adapts the DDL (identity ids, BYTEA, DOUBLE PRECISION).
+  - `copy-to-postgres` copies the local SQLite file into Neon once (ids kept, re-runnable, sequences reset;
+    `TABLES` lists parents before children; drafts <-> outreach handled in two passes).
+  - Tests: SQLite by default. `SORT_SHERR_TEST_PG=postgresql://... pytest` runs the WHOLE suite on Postgres
+    (conftest maps each test database to a throwaway schema). Run it after any SQL change.
+- **Accounts** (`web/auth.py`), active when `config.LOGIN_REQUIRED` (Render sets `RENDER`; or `SORT_SHERR_LOGIN=1`):
+  - Invite-only (no email-sending code, so no email sign-up or reset): the admin makes one-time `/join/<code>`
+    links on /admin (or `invite` CLI); a link with `for_user_id` resets that user's password. Only sha256 of codes
+    is stored. Passwords: stdlib scrypt. Login: Starlette `SessionMiddleware` signed cookie (uid, name, admin),
+    https-only on Render, SameSite=lax. 5 wrong passwords lock a username for 5 min (in memory).
+  - `login_gate` middleware: everything except /login, /join/, /static/, /healthz needs a session.
+  - `owner_guard` is a dependency on the Match/Draft/Outreach ROUTERS (app.py): the cid/candidate_id/run_id
+    in the URL must belong to the session's user, else 404. Don't bypass it with candidate ids from forms.
+  - `candidate_profiles.user_id`; resume cache key = sha256("user<id>:" + file) so students never share one.
+    Uploads are deleted after parsing (`parse-resume --delete-file`); `/match/resume/<file_id>` finds the
+    candidate by hash prefix + user. Runner tasks have an `owner`; students see only their own task log.
+  - Admin-only on the web when hosted: /admin, forgetting a (shared) contact. Students can delete a resume and
+    everything made from it (`forget --candidate`). Per-student limits: `MAX_RESUMES_PER_USER`,
+    `MAX_MATCH_RUNS_PER_DAY` (shared free Gemini key), plus the existing draft cap.
+  - Exception to "web writes go through the CLI": account writes (join, password, invites) happen in the web
+    process, because a password must never be a process argument. `create-user` asks for it on stdin.
+- **Render** (`render.yaml`, `.python-version` 3.13): `pip install -e ".[deploy]"` (no torch, no Playwright),
+  model downloaded at build (`embed-companies --download-only` into `models/`), uvicorn with `--proxy-headers`.
+  `/admin` hides crawl buttons when hosted and links to the GitHub workflow (`SORT_SHERR_REFRESH_URL`).
+- **Embeddings when hosted:** `SORT_SHERR_EMBEDDER=fastembed` = the same bge-small model on ONNX (vectors match
+  torch's, cosine 1.0), cached under the name `fastembed:<model>`. Measured: web ~80 MB + a match subprocess
+  ~340 MB peak. `embed_cached` works in chunks of 256 (saved as it goes), fastembed batch 8: embedding all
+  4.6k companies peaks ~400 MB.
+- **GitHub Actions** (`.github/workflows/refresh.yml`): weekly + "Run workflow": seed yc + hn, discover/crawl
+  `--limit`, `embed-companies`, `stats`. Secrets `DATABASE_URL` (required), `GEMINI_API_KEY` (optional).
+  `timeout-minutes: 120`, one run at a time.
 

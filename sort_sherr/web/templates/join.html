@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}{{ 'New password' if reset_for else 'Join' }}{% endblock %}
+{% block content %}
+<div class="card auth-card">
+  {% if reset_for %}
+  <h1 style="margin-top:0">New password</h1>
+  <p class="muted small">For <strong>{{ reset_for.username }}</strong>. This link works once.</p>
+  {% else %}
+  <h1 style="margin-top:0">Join Sort Sherr</h1>
+  <p class="muted small">Pick a username and password. This invite link works once.</p>
+  {% endif %}
+  {% if error %}<p class="notice bad-notice">{{ error }}</p>{% endif %}
+  <form method="post" action="/join/{{ code }}">
+    {% if not reset_for %}
+    <label class="field"><span>Username <small class="muted">(letters, digits, . _ -)</small></span>
+      <input type="text" name="username" required minlength="3" maxlength="30" pattern="[A-Za-z0-9_.\-]{3,30}" autocomplete="username" autofocus></label>
+    {% endif %}
+    <label class="field"><span>Password <small class="muted">(at least 10 characters)</small></span>
+      <input type="password" name="password" required minlength="10" maxlength="200" autocomplete="new-password"></label>
+    <label class="field"><span>Password again</span>
+      <input type="password" name="again" required minlength="10" maxlength="200" autocomplete="new-password"></label>
+    {% if not reset_for %}
+    <p class="small muted" style="margin:0">Good to know: your resume is read on the server. Your name, email, phone, links
+      and ID numbers are removed first, then the rest is sent to Google's free Gemini API, which Google may use to
+      improve its products. Contacts, drafts and outreach stay in this site's database, visible only to you
+      (and the site's admin). You can delete a resume and everything made from it at any time.</p>
+    {% endif %}
+    <button type="submit">{{ 'Save new password' if reset_for else 'Create my account' }}</button>
+  </form>
+</div>
+{% endblock %}

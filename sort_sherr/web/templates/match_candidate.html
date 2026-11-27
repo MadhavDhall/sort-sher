@@ -111,4 +111,14 @@
   </table>
 </div>
 {% endif %}
+
+<details class="card" style="margin-top:1.5rem">
+  <summary class="small">Delete this resume</summary>
+  <form method="post" action="/match/candidates/{{ cid }}/forget"
+        onsubmit="return confirm('Delete this resume, its shortlists, drafts and outreach history? This cannot be undone.')">
+    <p class="small muted">Removes the parsed resume and everything made from it: shortlists, email drafts and outreach
+      history. Company data (public) stays. The uploaded file itself was never kept.</p>
+    <button type="submit" class="danger">Delete it all</button>
+  </form>
+</details>
 {% endblock %}

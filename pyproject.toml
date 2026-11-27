@@ -23,6 +23,11 @@ browser = ["playwright>=1.45"]
 # Part 2: resume parsing + matching (sentence-transformers pulls in torch, ~1 GB)
 match = ["pypdf>=5", "python-docx>=1.1", "numpy>=1.26", "sentence-transformers>=3"]
 dev = ["pytest>=8"]
+# Hosting (Render free + Neon): Postgres driver, the login cookie, and matching WITHOUT torch
+# (fastembed runs the same bge-small model with ONNX, ~280 MB instead of ~1 GB).
+deploy = ["psycopg[binary]>=3.2", "itsdangerous>=2.1", "fastembed>=0.4", "pypdf>=5", "python-docx>=1.1", "numpy>=1.26"]
+# GitHub Actions refresh: the crawl (with a real browser for JavaScript pages) + embeddings
+refresh = ["psycopg[binary]>=3.2", "fastembed>=0.4", "numpy>=1.26", "playwright>=1.45"]
 
 [project.scripts]
 sort-sherr = "sort_sherr.cli:app"

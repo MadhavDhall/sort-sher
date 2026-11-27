@@ -18,12 +18,20 @@
   <header>
     <div class="bar">
       <a class="logo" href="/"><span class="mark" aria-hidden="true">🦁</span>Sort <span>Sherr</span></a>
+      {% if not login_on() or request.session.get('uid') %}{# logged-out visitors on the hosted site: no menu #}
       <nav>
         <a href="/" class="{{ 'on' if active == 'jobs' }}">Jobs</a>
         <a href="/companies" class="{{ 'on' if active == 'companies' }}">Companies</a>
         <a href="/match" class="{{ 'on' if active == 'match' }}">Match me</a>
-        <a href="/admin" class="{{ 'on' if active == 'admin' }}">Admin</a>
+        {% if not login_on() or request.session.get('admin') %}<a href="/admin" class="{{ 'on' if active == 'admin' }}">Admin</a>{% endif %}
       </nav>
+      {% endif %}
+      {% if request.session.get('uid') %}
+      <form method="post" action="/logout" class="who">
+        <span class="small muted">{{ request.session.get('name') }}</span>
+        <button type="submit" class="small-button secondary">Log out</button>
+      </form>
+      {% endif %}
       <button type="button" class="theme-switch" id="theme-switch" title="Switch theme">Theme</button>
     </div>
   </header>

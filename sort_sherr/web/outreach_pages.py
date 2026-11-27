@@ -27,6 +27,7 @@ from ..tracker.lifecycle import CHANNELS, MANUAL_STATUSES, REPLY_TYPES, allowed_
 from ..tracker.metrics import pct, records, summary, to_csv
 from ..tracker.report import render_report
 from .match_pages import start_task
+from . import auth
 from .runner import run_now, runner
 
 # A date from <input type="date"> or a date+time from <input type="datetime-local">
@@ -187,7 +188,8 @@ def setup(templates, get_conn, int_or):
                     + (f" Lint: {lint}" if lint else ""))
 
     @router.post("/match/candidates/{cid}/outreach/{oid}/followup")
-    async def post_followup(cid: int, oid: int, value: str = Form(""), redo: str = Form(""), conn=Depends(get_conn)):
+    async def post_followup(request: Request, cid: int, oid: int, value: str = Form(""), redo: str = Form(""),
+                            conn=Depends(get_conn)):
         o = outreach_of(conn, cid, oid)
         if o["status"] != "sent":
             raise HTTPException(400, "Follow-ups are only for emails still waiting for a reply.")
@@ -198,7 +200,7 @@ def setup(templates, get_conn, int_or):
             args.append(f"--value={clean_text(value, MAX_VALUE)}")
         if redo:
             args.append("--redo")
-        start_task("Draft follow-up", [args])
+        start_task("Draft follow-up", [args], auth.user_id(request))
         return RedirectResponse(f"/match/task?next=/match/candidates/{cid}/outreach/{oid}", status_code=303)
 
     # ---------- from the drafts page: "I sent it" ----------

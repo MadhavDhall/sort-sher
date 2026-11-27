@@ -29,6 +29,7 @@ from ..outreach.run import SETUPS, drafts_left_today
 from ..storage import db
 from ..tracker.lifecycle import CHANNELS
 from .match_pages import start_task
+from . import auth
 from .runner import run_now, runner
 
 TOP_CHOICES = [3, 5, 10, 15, 20]
@@ -96,7 +97,7 @@ def setup(templates, get_conn, int_or):
         if not config.GEMINI_API_KEY:
             raise HTTPException(400, "Drafting needs a free GEMINI_API_KEY in .env (see README).")
         form = await request.form()
-        start_task("Draft emails", [build_draft_args(cid, form, int_or)])
+        start_task("Draft emails", [build_draft_args(cid, form, int_or)], auth.user_id(request))
         return RedirectResponse(f"/match/task?next=/match/candidates/{cid}/drafts", status_code=303)
 
     # ---------- one company: contacts, variants, edit + approve ----------
@@ -143,8 +144,11 @@ def setup(templates, get_conn, int_or):
         return RedirectResponse(back(cid, company_id, msg=msg), status_code=303)
 
     @router.post("/match/candidates/{cid}/drafts/{company_id}/forget")
-    async def draft_forget(cid: int, company_id: int, contact_id: int = Form(...), conn=Depends(get_conn)):
+    async def draft_forget(request: Request, cid: int, company_id: int, contact_id: int = Form(...),
+                           conn=Depends(get_conn)):
         company_drafts(conn, cid, company_id)
+        if not auth.is_admin(request):  # contacts are shared by every student: only the admin removes them
+            raise HTTPException(403, "Only the admin can forget a contact (it's removed for everyone).")
         if contact_id not in {c["id"] for c in db.company_contacts(conn, company_id)}:
             raise HTTPException(400, "Unknown contact")
         code, _ = await run_now(["forget-contact", "--company", str(company_id), "--id", str(contact_id)])

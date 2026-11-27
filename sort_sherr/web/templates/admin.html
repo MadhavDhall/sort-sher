@@ -39,8 +39,50 @@
   {% endfor %}
 </div>
 
+<!-- ---------- students (hosted site only) ---------- -->
+{% if login_required %}
+<h2>Students</h2>
+{% if new_link %}
+<div class="notice good-notice">
+  <strong>{{ 'Password-reset link for ' ~ new_link_for if new_link_for else 'New invite link' }}</strong> (one-time; shown only now, so copy it):
+  <div style="margin-top:.4rem"><code id="new-link">{{ new_link }}</code>
+    <button type="button" class="small-button secondary" onclick="navigator.clipboard.writeText(document.getElementById('new-link').textContent); this.textContent='Copied ✓'">Copy</button></div>
+  <div class="small" style="margin-top:.3rem">Send it privately (WhatsApp, DM). Whoever opens it first gets the account.</div>
+</div>
+{% endif %}
+<div class="two-col">
+  <form class="card" method="post" action="/admin/invite">
+    <h3 class="card-h">Invite a student</h3>
+    <p class="small muted">Makes a one-time sign-up link. There's no email sign-up: Sort Sherr has no email-sending code.
+      {{ open_invites }} unused link(s) out there.</p>
+    <button type="submit">Make an invite link</button>
+  </form>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>User</th><th class="num">Resumes</th><th>Since</th><th></th></tr></thead>
+      <tbody>
+      {% for u in users %}
+        <tr><td>{{ u.username }} {% if u.is_admin %}<span class="badge">admin</span>{% endif %}</td>
+          <td class="num">{{ u.resumes }}</td><td class="small">{{ u.created_at | day }}</td>
+          <td><form method="post" action="/admin/invite"><input type="hidden" name="reset_user" value="{{ u.id }}">
+            <button class="small-button secondary" type="submit" title="Make a one-time link to set a new password">Reset password</button></form></td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
 <!-- ---------- get new data ---------- -->
 <h2>Get new data</h2>
+{% if hosted %}
+<div class="card">
+  <p>On the hosted site, new data comes from the <strong>GitHub Actions refresh</strong> (weekly, or press “Run workflow”).
+    This small free server sleeps when idle, so it doesn't crawl.</p>
+  <p class="small muted">Last crawl: {{ last_refresh | day if last_refresh else 'never' }}.</p>
+  {% if refresh_url %}<a class="button secondary" href="{{ refresh_url }}" target="_blank" rel="noopener noreferrer">Open the refresh workflow ↗</a>{% endif %}
+</div>
+{% else %}
 <div class="actions-grid">
   <form class="card action" method="post" action="/admin/run">
     <input type="hidden" name="action" value="refresh">
@@ -93,6 +135,7 @@
     <button type="submit" {{ 'disabled' if busy }}>Crawl</button>
   </form>
 </div>
+{% endif %}
 
 <!-- ---------- current task ---------- -->
 <h2>Current task</h2>

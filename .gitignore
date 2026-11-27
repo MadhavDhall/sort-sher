@@ -14,3 +14,5 @@ drafts/
 # Part 4: outreach reports and CSV exports (company names, your outcomes)
 reports/
 exports/
+# hosting: the embedding model, downloaded at build time
+models/

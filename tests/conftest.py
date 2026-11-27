@@ -1,10 +1,47 @@
 import json
+import os
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+# ---------- optional: run the WHOLE suite on Postgres ----------
+# SORT_SHERR_TEST_PG=postgresql://... pytest  -> every test database (":memory:" or a temp file) becomes
+# its own throwaway schema in that Postgres database, dropped at the end. Unset (the default): SQLite,
+# no network. Use a local Postgres or a Neon *branch*, never the database the website uses.
+PG_URL = os.getenv("SORT_SHERR_TEST_PG")
+PG_SCHEMAS: dict[str, str] = {}
+
+if PG_URL:
+    import uuid
+
+    import psycopg
+
+    from sort_sherr.storage import db as _db
+
+    _real_connect = _db.connect
+
+    def _connect_on_postgres(path, schema=None):
+        if _db.is_postgres(path):
+            return _real_connect(path, schema)
+        key = str(path) if str(path) != ":memory:" else uuid.uuid4().hex  # :memory: = a new database each time
+        if key not in PG_SCHEMAS:
+            PG_SCHEMAS[key] = "t_" + uuid.uuid4().hex[:12]
+            with psycopg.connect(PG_URL, autocommit=True) as c:
+                c.execute(f"CREATE SCHEMA {PG_SCHEMAS[key]}")
+        return _real_connect(PG_URL, PG_SCHEMAS[key])
+
+    _db.connect = _connect_on_postgres
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if PG_URL and PG_SCHEMAS:
+        with psycopg.connect(PG_URL, autocommit=True) as c:
+            for name in PG_SCHEMAS.values():
+                c.execute(f"DROP SCHEMA IF EXISTS {name} CASCADE")
 
 
 @pytest.fixture

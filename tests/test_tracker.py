@@ -1,7 +1,5 @@
 """Part 4: outreach records, the event log, migration from Part 3's `contacted`, manual logging, forget."""
 
-import sqlite3
-
 import pytest
 from typer.testing import CliRunner
 
@@ -20,9 +18,9 @@ def kinds(conn, oid):
 def test_check_constraint_rejects_unknown_status(outreach_db):
     conn = outreach_db["conn"]
     oid = db.ensure_outreach(conn, outreach_db["cand"], outreach_db["company"])
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(db.INTEGRITY_ERRORS):
         conn.execute("UPDATE outreach SET status = 'maybe' WHERE id = ?", (oid,))
-    with pytest.raises(sqlite3.IntegrityError):  # foreign keys are enforced too
+    with pytest.raises(db.INTEGRITY_ERRORS):  # foreign keys are enforced too
         conn.execute("INSERT INTO outreach_events (outreach_id, kind, at) VALUES (999, 'sent', 'x')")
 
 

@@ -203,6 +203,8 @@ def parse_resume(
     name: str = typer.Option("", help="Your name (removed before the LLM call); skips the question"),
     grad_year: int = typer.Option(0, help="Your graduation / passing-out year, e.g. 2028; skips the question"),
     yes: bool = typer.Option(False, "--yes", help="Don't ask; accept the detected name and year"),
+    user: int = typer.Option(0, help="Hosted site: the student account it belongs to"),
+    delete_file: bool = typer.Option(False, help="Delete the uploaded file after parsing (the website does)"),
 ):
     """Read a resume into a structured profile and save it. Prints the candidate id.
 
@@ -218,7 +220,10 @@ def parse_resume(
     if not path.is_file():
         raise typer.BadParameter(f"no such file: {file}")
     conn = db.connect(config.DB_PATH)
-    already = db.get_candidate_by_hash(conn, resume.file_hash(path))
+    user_id = user or None
+    if user_id and not db.get_user(conn, user_id):
+        raise typer.BadParameter(f"no user #{user}")
+    already = db.get_candidate_by_hash(conn, resume.file_hash(path, user_id))
 
     provider = None  # already parsed: no LLM needed
     if not already:
@@ -235,9 +240,12 @@ def parse_resume(
         provider = need_llm()
         typer.echo("Removing your name, email, phone, links and ID numbers locally, then sending the rest to the LLM...")
     try:
-        cid, profile, cached = asyncio.run(resume.parse_resume(conn, provider, path, name or None))
+        cid, profile, cached = asyncio.run(resume.parse_resume(conn, provider, path, name or None, user_id))
     except ValueError as e:
         raise typer.BadParameter(str(e))
+    finally:
+        if delete_file:  # the resume file itself is never kept: the DB has the redacted profile
+            path.unlink(missing_ok=True)
 
     found = resume.grad_year(profile)
     if not grad_year and not yes:
@@ -289,7 +297,7 @@ def match(
     """Rank startups for a candidate: filters -> embeddings -> LLM rerank. Every run is saved."""
     from pathlib import Path
 
-    from .matching.embed import SentenceTransformerEmbedder
+    from .matching.embed import default_embedder
     from .matching.models import ROLE_CHOICES, Preferences
     from .matching.run import run_match
 
@@ -307,7 +315,7 @@ def match(
     provider = None if no_rerank else need_llm()
     conn = db.connect(config.DB_PATH)
     try:
-        run_id = asyncio.run(run_match(conn, SentenceTransformerEmbedder(), provider, candidate, prefs, typer.echo))
+        run_id = asyncio.run(run_match(conn, default_embedder(), provider, candidate, prefs, typer.echo))
     except ValueError as e:
         raise typer.BadParameter(str(e))
     except Exception as e:
@@ -1097,17 +1105,25 @@ def export(
 def forget(
     company: int = typer.Option(0, help="Delete ALL personal data about this company id"),
     contact: str = typer.Option("", help="Delete this email / handle / URL everywhere (pass as --contact=...)"),
+    candidate: int = typer.Option(0, help="Delete one resume and everything made from it (runs, drafts, outreach)"),
     yes: bool = typer.Option(False, "--yes", help="Don't ask for confirmation"),
 ):
-    """Delete personal data: contacts, drafts, outreach history (and drafts/ files) for a company, or one contact."""
+    """Delete personal data: a company's contacts/drafts/outreach, one contact everywhere, or one resume."""
     import re
 
     from .outreach_config import DRAFTS_DIR
 
-    if bool(company) == bool(contact):
-        raise typer.BadParameter("give exactly one of --company or --contact")
+    if sum(map(bool, (company, contact, candidate))) != 1:
+        raise typer.BadParameter("give exactly one of --company, --contact or --candidate")
     conn = db.connect(config.DB_PATH)
-    if company:
+    if candidate:
+        if not db.get_candidate(conn, candidate):
+            raise typer.BadParameter(f"no candidate #{candidate}")
+        if not yes and not typer.confirm(f"Delete resume #{candidate} with all its runs, drafts and outreach?"):
+            raise typer.Exit(0)
+        db.forget_candidate(conn, candidate)
+        typer.echo(f"Deleted candidate #{candidate} and everything made from it.")
+    elif company:
         c = need_company(conn, company)
         if not yes and not typer.confirm(f"Delete all contacts, drafts and outreach history for {c.name}?"):
             raise typer.Exit(0)
@@ -1123,6 +1139,87 @@ def forget(
             raise typer.Exit(0)
         n = db.forget_contact_value(conn, contact)
         typer.echo(f"Forgot {contact} ({n} saved row(s)). It will never be saved again.")
+
+
+# ---------- hosting ----------
+
+
+@app.command("embed-companies")
+def embed_companies(download_only: bool = typer.Option(False, help="Only download the model (Render's build step)")):
+    """Embed every company document now (the GitHub refresh job runs this), so a student's `match`
+    only has to embed their own resume: fast, and light on the small web server."""
+    from .matching.embed import default_embedder, embed_cached
+    from .matching.retrieve import company_document
+
+    embedder = default_embedder()
+    if download_only:
+        embedder.load() if hasattr(embedder, "load") else embedder.embed(["warm up"])
+        typer.echo(f"Model ready: {embedder.name}")
+        return
+    conn = db.connect(config.DB_PATH)
+    docs = [company_document(c) for c in db.matching_companies(conn)]
+    _, new = embed_cached(conn, embedder, docs)
+    typer.echo(f"{len(docs)} companies: {new} newly embedded, {len(docs) - new} already cached ({embedder.name}).")
+
+
+@app.command("create-user")
+def create_user(
+    username: str = typer.Option(..., help="Login name (3-30 letters, digits, . _ -)"),
+    admin: bool = typer.Option(False, help="Make it the admin account (sees everything, makes invites)"),
+):
+    """Create an account (use it once for YOUR admin account; students join with invite links).
+    The password is asked for, never passed as an argument."""
+    from .web.auth import USERNAME, hash_password, password_problem
+
+    if not USERNAME.match(username):
+        raise typer.BadParameter("3-30 letters, digits, dots, dashes or underscores")
+    conn = db.connect(config.DB_PATH)
+    if db.get_user_by_name(conn, username):
+        raise typer.BadParameter("that username is taken")
+    password = typer.prompt("Password", hide_input=True)
+    problem = password_problem(password, typer.prompt("Again", hide_input=True))
+    if problem:
+        raise typer.BadParameter(problem)
+    uid = db.create_user(conn, username, hash_password(password), is_admin=admin)
+    typer.echo(f"Created user #{uid} {username}" + (" (admin)" if admin else "") + ".")
+
+
+@app.command()
+def invite(
+    base_url: str = typer.Option("", help="Your site's address, e.g. https://sort-sherr.onrender.com"),
+    reset: str = typer.Option("", help="Instead: a password-reset link for this username"),
+):
+    """Make a one-time link: a new student account, or a password reset. Share it privately."""
+    from .web.auth import new_invite_code
+
+    conn = db.connect(config.DB_PATH)
+    target = None
+    if reset:
+        target = db.get_user_by_name(conn, reset)
+        if target is None:
+            raise typer.BadParameter(f"no user {reset!r}")
+    code, hashed = new_invite_code()
+    db.create_invite(conn, hashed, None, target["id"] if target else None)
+    typer.echo(f"{base_url.rstrip('/')}/join/{code}")
+
+
+@app.command("copy-to-postgres")
+def copy_to_postgres(
+    to: str = typer.Option("", help="Postgres URL (default: DATABASE_URL). Never commit it."),
+    from_: str = typer.Option("", "--from", help="SQLite file to copy (default: data/sort_sherr.db)"),
+):
+    """Copy your local SQLite database into Postgres (e.g. Neon), once. Running it again only adds what's missing."""
+    from pathlib import Path
+
+    url = to or config.DATABASE_URL
+    if not url or not db.is_postgres(url):
+        raise typer.BadParameter("give --to postgresql://... or set DATABASE_URL")
+    src_path = Path(from_) if from_ else config.SQLITE_PATH
+    if not src_path.exists():
+        raise typer.BadParameter(f"no SQLite file at {src_path}")
+    typer.echo(f"Copying {src_path} -> Postgres ({url.split('@')[-1].split('/')[0]})...")
+    counts = db.copy_database(db.connect(src_path), db.connect(url), progress=typer.echo)
+    typer.echo(f"Done: {sum(counts.values()):,} rows. Re-running is safe (existing rows are skipped).")
 
 
 if __name__ == "__main__":

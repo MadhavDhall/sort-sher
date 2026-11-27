@@ -9,6 +9,8 @@ Pages (all HTML, made on the server with Jinja2 templates in web/templates/):
   /admin             stats + buttons to run seed / discover / crawl, with live output
   /match/...         Part 2: upload a resume, get a ranked shortlist (see match_pages.py)
   /match/candidates/{id}/drafts...   Part 3: research + email drafts, edit + approve (see draft_pages.py)
+  /match/candidates/{id}/outreach... Part 4: outreach tracker (see outreach_pages.py)
+  /login, /join/{code}               hosted only: student accounts (see auth.py)
 JSON (used by the admin page's little script):
   /admin/task        the current task's status and log
 """
@@ -22,11 +24,13 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
 
 from .. import config
 from ..models import AtsType
 from ..scoring import score_breakdown
 from ..storage import db
+from . import auth
 from .runner import runner
 
 HERE = Path(__file__).parent
@@ -39,6 +43,18 @@ app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
 templates = Jinja2Templates(directory=HERE / "templates")
 templates.env.globals.update(TIER_NAMES=TIER_NAMES, ATS_TYPES=[a.value for a in AtsType])
 templates.env.filters["day"] = lambda v: (v or "")[:10]  # "2026-11-03T18:56:53+00:00" -> "2026-11-03"
+templates.env.globals["login_on"] = lambda: config.LOGIN_REQUIRED
+
+# Login (hosted only). The gate is added first so the session middleware wraps it (the last one added
+# runs first). The cookie is signed, https-only on Render, and not sent with cross-site POSTs (lax).
+app.middleware("http")(auth.login_gate)
+if config.LOGIN_REQUIRED and not config.SESSION_SECRET:
+    import logging
+
+    logging.getLogger("uvicorn.error").warning(
+        "SORT_SHERR_SESSION_SECRET is not set: everyone is logged out whenever the server restarts.")
+app.add_middleware(SessionMiddleware, secret_key=config.SESSION_SECRET or secrets.token_urlsafe(32),
+                   https_only=config.HOSTED, same_site="lax", max_age=14 * 24 * 3600)
 
 
 def get_conn():
@@ -55,9 +71,13 @@ def get_conn():
 security = HTTPBasic(auto_error=False)
 
 
-def require_admin(credentials: HTTPBasicCredentials | None = Depends(security)) -> None:
-    """If SORT_SHERR_ADMIN_PASSWORD is set, the admin pages ask for it (any username).
-    If it isn't set, admin is open -- fine on your own laptop, NOT if you put the site online."""
+def require_admin(request: Request, credentials: HTTPBasicCredentials | None = Depends(security)) -> None:
+    """Hosted: only an admin ACCOUNT gets in. Locally: if SORT_SHERR_ADMIN_PASSWORD is set, the admin pages
+    ask for it (any username); if it isn't set, admin is open (fine on your own laptop only)."""
+    if config.LOGIN_REQUIRED:
+        if not request.session.get("admin"):
+            raise HTTPException(403, "Admins only")
+        return
     if not config.ADMIN_PASSWORD:
         return
     ok = credentials and secrets.compare_digest(credentials.password.encode(), config.ADMIN_PASSWORD.encode())
@@ -156,12 +176,16 @@ def company_page(request: Request, company_id: int, conn=Depends(get_conn)):
 # ---------- admin ----------
 
 
-@app.get("/admin", dependencies=[Depends(require_admin)])
-def admin_page(request: Request, conn=Depends(get_conn)):
-    return templates.TemplateResponse(
-        request, "admin.html",
-        {
+def admin_context(request: Request, conn, **extra) -> dict:
+    return {
             "s": db.stats(conn),
+            # hosted: data is refreshed by the GitHub Actions job, not from this (small, sleeping) server
+            "hosted": config.HOSTED or bool(config.DATABASE_URL),
+            "refresh_url": config.REFRESH_URL,
+            "last_refresh": db.last_crawl(conn),
+            "users": db.list_users(conn) if config.LOGIN_REQUIRED else [],
+            "open_invites": db.open_invites(conn) if config.LOGIN_REQUIRED else 0,
+            "login_required": config.LOGIN_REQUIRED,
             "task": runner.current.to_dict() if runner.current else None,
             "history": [t.to_dict() for t in runner.history],
             "busy": runner.busy,
@@ -169,8 +193,29 @@ def admin_page(request: Request, conn=Depends(get_conn)):
             "llm_model": config.LLM_MODEL,
             "statuses": CRAWL_STATUSES,
             "active": "admin",
-        },
-    )
+            **extra,
+    }
+
+
+@app.get("/admin", dependencies=[Depends(require_admin)])
+def admin_page(request: Request, conn=Depends(get_conn)):
+    return templates.TemplateResponse(request, "admin.html", admin_context(request, conn))
+
+
+@app.post("/admin/invite", dependencies=[Depends(require_admin)])
+def admin_invite(request: Request, reset_user: int = Form(0), conn=Depends(get_conn)):
+    """A one-time link: a new student account, or (reset_user) a password reset. Shown ONCE: only its
+    hash is stored. (Written here, not via the CLI: same reason as auth.py, it's account data.)"""
+    if not config.LOGIN_REQUIRED:
+        raise HTTPException(400, "Accounts are only used on the hosted site.")
+    target = db.get_user(conn, reset_user) if reset_user else None
+    if reset_user and target is None:
+        raise HTTPException(404, "Unknown user")
+    code, hashed = auth.new_invite_code()
+    db.create_invite(conn, hashed, request.session.get("uid"), target["id"] if target else None)
+    link = f"{str(request.base_url).rstrip('/')}/join/{code}"
+    return templates.TemplateResponse(request, "admin.html", admin_context(
+        request, conn, new_link=link, new_link_for=target["username"] if target else None))
 
 
 @app.get("/admin/task", dependencies=[Depends(require_admin)])
@@ -223,6 +268,8 @@ def build_commands(action: str, form: dict) -> tuple[str, list[list[str]]]:
 
 @app.post("/admin/run", dependencies=[Depends(require_admin)])
 async def admin_run(request: Request, action: str = Form(...)):
+    if config.HOSTED or config.DATABASE_URL:
+        raise HTTPException(400, "On the hosted site, data is refreshed by the GitHub Actions workflow.")
     form = dict(await request.form())
     title, commands = build_commands(action, form)
     try:
@@ -242,16 +289,19 @@ async def admin_stop():
 
 from . import match_pages  # noqa: E402  (needs the helpers above)
 
-app.include_router(match_pages.setup(templates, get_conn, int_or))  # open: no admin password
+# Every Match / Draft / Outreach page: the candidate in the URL must be the logged-in student's (hosted).
+owner_only = [Depends(auth.owner_guard(get_conn))]
+app.include_router(auth.setup(templates, get_conn))  # /login, /join, /logout, /healthz
+app.include_router(match_pages.setup(templates, get_conn, int_or), dependencies=owner_only)
 
 # ---------- Part 3: research + email drafts (routes live in draft_pages.py) ----------
 
 from . import draft_pages  # noqa: E402
 
-app.include_router(draft_pages.setup(templates, get_conn, int_or))  # open, like /match (127.0.0.1 only)
+app.include_router(draft_pages.setup(templates, get_conn, int_or), dependencies=owner_only)
 
 # ---------- Part 4: outreach tracker (routes live in outreach_pages.py) ----------
 
 from . import outreach_pages  # noqa: E402
 
-app.include_router(outreach_pages.setup(templates, get_conn, int_or))  # open, like /match (127.0.0.1 only)
+app.include_router(outreach_pages.setup(templates, get_conn, int_or), dependencies=owner_only)

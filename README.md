@@ -576,6 +576,79 @@ python -m sort_sherr.cli report --candidate 1 --out reports/outreach.html
 A good rhythm: run `due` each morning, draft for a few new companies (the daily cap is 10), and look at
 `outreach-stats` once you have 10+ emails per group.
 
+## Host it for other students ($0/month)
+
+Sort Sherr can run online for other students. Each student has their own login, and nobody can see
+anyone else's resume, drafts or outreach. It costs **$0 a month**, so your Render credits stay untouched.
+
+| Piece | Where | Cost |
+|---|---|---|
+| Website | [Render](https://render.com) free web service (`render.yaml`) | $0 (sleeps after 15 min idle, ~1 min to wake) |
+| Database | [Neon](https://neon.com) free Postgres (one project per app, 1 GB, never expires) | $0 |
+| Weekly data refresh (seed, crawl, embeddings) | GitHub Actions (`.github/workflows/refresh.yml`) | $0 |
+
+Why this split:
+- Render's free server has a temporary disk, so the SQLite file would be wiped on every restart.
+- It also has only 512 MB of RAM, which is too small for crawling.
+- Render's own free Postgres is deleted after 30 days.
+- Crawling for everyone happens on GitHub's free machines, so it never runs on your laptop or a student's.
+
+### One-time setup (about 30 minutes)
+
+1. **Neon:**
+   - Sign up (free, no card).
+   - Create a project in region **AWS Asia Pacific (Singapore)**.
+   - Open **Connect** and copy the **pooled** connection string (it contains `-pooler`).
+2. **Move your data and make your admin account.** On your laptop, in this folder:
+   ```bash
+   .venv/bin/pip install -e ".[deploy]"
+   export DATABASE_URL='postgresql://...-pooler...neon.tech/neondb?sslmode=require'   # paste yours
+   .venv/bin/python -m sort_sherr.cli copy-to-postgres          # your companies, jobs, resumes... (re-runnable)
+   .venv/bin/python -m sort_sherr.cli create-user --username yourname --admin   # asks for a password
+   unset DATABASE_URL                                           # back to the local SQLite file
+   ```
+3. **GitHub:**
+   - Push this repo (private is fine). `.env` and `data/` are gitignored, so no secrets or data go up.
+   - Go to **Settings → Secrets and variables → Actions** and add `DATABASE_URL` and `GEMINI_API_KEY`.
+   - On the **Actions** tab, open **Refresh data → Run workflow** with limit `50` and check it goes green.
+     It also embeds every company once.
+4. **Render:**
+   - Go to **New → Blueprint** and pick the repo; it reads `render.yaml`.
+   - Paste `DATABASE_URL`, `GEMINI_API_KEY`, and optionally `SORT_SHERR_REFRESH_URL`
+     (`https://github.com/<you>/<repo>/actions/workflows/refresh.yml`). The login secret is generated for you.
+   - Deploy. The plan should say **Free**.
+5. **Invite students:** open your `https://<name>.onrender.com`, log in, go to **Admin → Make an invite link**,
+   and send each link privately. Forgot a password? **Admin → Reset password** makes a one-time link.
+
+### What students get, and the limits
+
+- **What they get:**
+  - their own resumes (up to 3), shortlists, drafts and outreach tracker
+  - a "Delete it all" button on each resume
+  - a privacy note when they join: their resume is redacted, then sent to Gemini's free tier
+- **Daily limits:** 3 match runs per student, and the usual draft cap. Everyone shares your free Gemini key,
+  so this keeps it fair. Change them with `SORT_SHERR_MAX_MATCH_RUNS` / `SORT_SHERR_MAX_RESUMES` on Render.
+- **One task at a time** on the server (parse, match or draft). If two students click at once, the second
+  sees "try again in a minute".
+- **First visit after idle** takes ~1 minute while the free server wakes up.
+
+### Your $50 of credits and other projects
+
+- Nothing above uses credits. In the Render dashboard, billing should keep showing $0.
+- **Never add** a Render Disk or Render Postgres: they bill every month.
+- **Free hours are shared:** all free web services in one Render workspace share one monthly allowance of free
+  instance hours ([Render docs](https://render.com/docs/free)). They only count while a service is awake, so 2–3
+  small projects that sleep when idle fit.
+- **Each extra project** gets its own Neon project, which is free too (Neon allows 100).
+- **If Sort Sherr must never sleep** (e.g. a demo day), switch only this service to Starter (~$7/month). $50 lasts
+  about 7 months; switch back to Free afterwards.
+
+### Testing against Postgres
+
+```bash
+SORT_SHERR_TEST_PG=postgresql://localhost/test_db .venv/bin/pytest   # the whole suite on Postgres (local or a Neon branch)
+```
+
 ## How companies are ranked (quality_score)
 
 There's no free funding dataset, and Crunchbase forbids scraping, so we use YC signals instead:
@@ -649,7 +722,7 @@ Sort sherr/
 │   │   ├── metrics.py     ← reply rate, breakdowns with n, CSV, match feedback
 │   │   ├── report.py      ← self-contained HTML report
 │   │   └── templates/report.html
-│   ├── web/               ← the website: app.py (routes), match_pages.py (Match me), draft_pages.py (drafts),
+│   ├── web/               ← the website: app.py (routes), auth.py (hosted logins), match_pages.py (Match me), draft_pages.py (drafts),
 │   │                         outreach_pages.py (tracker), runner.py (tasks),
 │   │                         templates/, static/
 │   ├── config.py          ← settings (User-Agent, limits, DB path, LLM model)
@@ -688,6 +761,8 @@ Sort sherr/
   open web search for news, podcasts or talks: there is no free search API whose terms allow it.
 - **Contacts are often generic inboxes.** Few startups list a founder's email. Expect the founder's LinkedIn/X
   (from the YC page) or an inbox like hello@/research@ as the best option, and judge it yourself.
+- **Hosted site is small on purpose:** one task at a time, sleeps when idle, data refreshed weekly (or on demand)
+  by GitHub Actions rather than live.
 - **No Gmail integration.** Approved drafts go to `drafts/*.txt` and the clipboard; you paste and send,
   then log sends and replies by hand (`sent`, `reply`, or the website).
 - **Business days skip weekends only**, not public holidays.

@@ -27,6 +27,7 @@ class Task:
     title: str  # e.g. "Crawl"
     commands: list[list[str]]  # each one is CLI args, e.g. ["crawl", "--limit", "20"]
     status: str = "queued"  # queued -> running -> done / failed / stopped
+    owner: int | None = None  # hosted site: the student who started it (only they, and the admin, see it)
     log: list[str] = field(default_factory=list)
     started_at: datetime | None = None
     finished_at: datetime | None = None
@@ -54,10 +55,11 @@ class Runner:
     def busy(self) -> bool:
         return self.current is not None and self.current.status in ("queued", "running")
 
-    def start(self, title: str, commands: list[list[str]]) -> Task:
+    def start(self, title: str, commands: list[list[str]], owner: int | None = None) -> Task:
         if self.busy:
-            raise RuntimeError("Another task is already running. Wait for it or stop it first.")
-        task = Task(self.next_id, title, commands)
+            raise RuntimeError("Another task is already running (maybe another student's). "
+                               "Wait a minute and try again.")
+        task = Task(self.next_id, title, commands, owner=owner)
         self.next_id += 1
         self.current = task
         asyncio.get_running_loop().create_task(self._run(task))
