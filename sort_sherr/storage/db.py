@@ -369,9 +369,21 @@ class PgConnection:
         return cur
 
     def executemany(self, sql: str, rows):
+        import psycopg
+
         rows = [_pg_params(r) for r in rows]
-        cur = self.raw.cursor()
-        if rows:
+        if not rows:
+            return self.raw.cursor()
+        try:
+            cur = self.raw.cursor()
+            cur.executemany(_pg_sql(sql, rows[0]), rows)
+        except psycopg.OperationalError:
+            if self._tx is not None:
+                raise
+            # Dropped connection: retry once on a new one. Our bulk writes are upserts / ON CONFLICT DO
+            # NOTHING, so rows that already went in are not doubled.
+            self.raw = self._open()
+            cur = self.raw.cursor()
             cur.executemany(_pg_sql(sql, rows[0]), rows)
         return cur
 
